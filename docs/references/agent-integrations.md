@@ -5,7 +5,7 @@ owns its interface and agent protocol; the integration layer supplies the SSH co
 that puts its filesystem operations in the workspace. This keeps application support independent of VM lifecycle.
 
 `shroom-integrations` consumes the core's `SshConnection`. It exports native SSH configuration, builds guest
-commands, and describes local web forwards. The [core reference](minimal-core.md) owns SSH
+commands, and describes local web forwards. The [core reference](shroom-core.md#ssh-workspace-core) owns SSH
 identity, provisioning, and connection refresh. The [integration evaluation](../evaluations/2026-09-20-agent-integrations/README.md)
 records transport evidence and the application compatibility checks still to run.
 

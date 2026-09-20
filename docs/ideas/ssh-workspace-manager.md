@@ -8,7 +8,8 @@ without replacing their interfaces.
 ## Design
 
 Build a lightweight, cross-platform Rust app over microsandbox, with priority on macOS and Linux.
-The [minimal core reference](../references/minimal-core.md) defines the thin SDK integration and SSH connection contract.
+The [Shroom core reference](../references/shroom-core.md#ssh-workspace-core) defines the thin SDK integration
+and SSH connection contract.
 The [agent integration reference](../references/agent-integrations.md) defines connection exports and launch recipes.
 
 Target native SSH for Codex, Claude Desktop, Cursor, and ZCode.
@@ -27,7 +28,7 @@ the remaining application-level compatibility checks.
 
 ## Tasks
 
-Build on the [minimal core](../references/minimal-core.md).
+Build on the [Shroom core](../references/shroom-core.md#ssh-workspace-core).
 Broader product work includes packaging pinned runtimes and guest images and validating agent applications.
 Validate each agent's guest-bound editing and execution, reconnects, persistence,
 and access isolation across supported platforms.

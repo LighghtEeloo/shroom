@@ -1,6 +1,6 @@
 # Minimal Core Validation — 2026-09-20
 
-The [core contract](../../references/minimal-core.md) is implemented in one library.
+The [core contract](../../references/shroom-core.md#ssh-workspace-core) is implemented in one library.
 The full opt-in runtime sequence passed on macOS ARM64 in 29.41 seconds, including the separate caller process.
 Linux x86-64 runtime acceptance remains unrun because this development environment has no such host.
 The CI workflow runs formatting, Clippy, and the ordinary tests on Linux and macOS; it does not boot VMs.

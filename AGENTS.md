@@ -5,7 +5,7 @@ Guidance for automated assistants working in this repository.
 within their stated scope.
 
 Shroom is an SSH-first workspace manager with a thin, cross-platform Rust core over microsandbox.
-The [minimal core reference](docs/references/minimal-core.md) defines its scope, SSH access contract,
+The [Shroom core reference](docs/references/shroom-core.md#ssh-workspace-core) defines its scope, SSH access contract,
 and the responsibilities delegated to the SDK.
 
 ## Language and Terminology

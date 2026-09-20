@@ -2,11 +2,12 @@
 
 Shroom is an SSH-first workspace library over microsandbox. The core exposes `create`, `list`, `get`,
 `start`, `stop`, and `remove`, returning connection details for existing SSH clients.
-See the [core contract](docs/references/minimal-core.md) and [documentation index](docs/README.md).
+See the [core contract](docs/references/shroom-core.md#ssh-workspace-core) and [documentation index](docs/README.md).
 
 The repository contains the workspace library in `crates/shroom-core`, agent app connection exports and launch
-recipes in `crates/shroom-integrations`, a prepared guest recipe in `images/workspace`, and documentation in `docs`.
-It has no CLI or resident service.
+recipes in `crates/shroom-integrations`, a typed Lume HTTP client in `crates/shroom-lume`, a prepared microsandbox
+guest recipe in `images/workspace`, and documentation in `docs`.
+It has no CLI or resident service of its own.
 
 ## Development
 
@@ -18,8 +19,8 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 ```
 
-Normal tests require host `ssh` and `ssh-keygen`, but do not boot VMs. Real-runtime acceptance is opt-in;
-see [validation](docs/evaluations/2026-09-20-minimal-core/README.md).
+Normal tests require host `ssh`, `ssh-keygen`, and permission to bind local TCP listeners, but do not boot VMs.
+Real-runtime acceptance is opt-in; see [validation](docs/evaluations/2026-09-20-minimal-core/README.md).
 
 ## Local Runtime and Image
 
@@ -90,3 +91,32 @@ Kimi CLI and Kimi/DeepSeek Harness web recipes use tools installed in the guest.
 application's actual reported URL, including any login token, because the requested port may change.
 See the [integration contract and examples](docs/references/agent-integrations.md) for process ownership,
 connection refresh, and [validation limits](docs/evaluations/2026-09-20-agent-integrations/README.md).
+
+## Lume HTTP SDK
+
+`shroom-lume` calls a separately managed local Lume service through HTTP; it never invokes the Lume CLI.
+It supports native VM operations for Linux and macOS. See the
+[client contract and required service patch](docs/references/shroom-core.md#lume-http-client) before use.
+This is the VM client portion of the integration; the
+[shared SSH workspace adapter](docs/proposals/lume-workspaces.md) still needs additional service capabilities.
+
+```rust
+use shroom_lume::{Client, Config};
+use std::time::Duration;
+
+async fn inspect() -> shroom_lume::Result<()> {
+    let client = Client::new(Config {
+        address: ([127, 0, 0, 1], 7777).into(),
+        storage: "/path/to/dedicated/lume-vms".into(),
+        request_timeout: Duration::from_secs(30),
+    })?;
+    for vm in client.list().await? {
+        println!("{}: {:?}", vm.name, vm.state);
+    }
+    Ok(())
+}
+```
+
+Creation and start return asynchronous acknowledgements. Linux creation allocates an empty disk;
+clone a prepared VM for a bootable guest. macOS installation requires a local IPSW.
+Native destructive operations are named `force_stop` and `force_delete` to reflect Lume's behavior.

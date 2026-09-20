@@ -1,10 +1,17 @@
-# Minimal Core
+# Shroom Core
 
-This reference records the approved thin SSH workspace library over the microsandbox SDK.
-The [validation report](../evaluations/2026-09-20-minimal-core/README.md) records the passing macOS ARM64
+This reference defines Shroom's SSH workspace core and its Lume HTTP client.
+The workspace core uses the microsandbox SDK to provide verified SSH access to persistent Linux guests.
+The Lume client exposes native Linux and macOS VM operations through a separately managed local service.
+Their contracts are described below; the remaining shared workspace integration is tracked in the
+[Lume workspaces proposal](../proposals/lume-workspaces.md).
+
+## SSH Workspace Core
+
+The [core validation report](../evaluations/2026-09-20-minimal-core/README.md) records the passing macOS ARM64
 acceptance run and the remaining Linux x86-64 runtime validation.
 
-## Purpose and Scope
+### Purpose and Scope
 
 Shroom makes microsandbox's persistent Linux sandboxes usable by existing SSH clients.
 Microsandbox already owns sandbox creation, lifecycle, filesystem persistence, and runtime status.
@@ -26,7 +33,7 @@ Ordinary SSH clients supply shell execution, SFTP, and application tunnels.
 Tart and direct Virtualization.framework integration are deferred.
 Implement no provider trait, provider registry, or compatibility layer for a hypothetical second runtime.
 
-## Architecture and Responsibility
+### Architecture and Responsibility
 
 The library calls the microsandbox SDK directly.
 OpenSSH runs inside the guest, and microsandbox publishes its port on host loopback.
@@ -58,7 +65,7 @@ Shroom reads it and adds SSH access information; it does not implement another c
 VM state machine, process supervisor, or network stack.
 Use native SDK types and errors wherever they already express the required meaning.
 
-## Workspace API
+### Workspace API
 
 `Core` serializes mutations with `&mut self`; SSH sessions remain independently concurrent.
 Opening a core acquires the state-directory lock before configuring the local SDK backend.
@@ -128,7 +135,7 @@ Malformed existing access files produce errors; missing or incomplete access mat
 by `start` and is never repaired implicitly.
 The directory is a client hint; an ordinary SSH session begins in the account's home.
 
-## SSH Identity and Connection Refresh
+### SSH Identity and Connection Refresh
 
 Generate a unique guest host key once during creation and read its public half
 through the SDK's guest administration channel.
@@ -160,7 +167,7 @@ Do not promise automatic refresh or `HostKeyAlias` support in every app.
 Such clients need their own verified pinning and refresh path, or an explicit manual reconnect.
 Existing sessions and application tunnels do not survive a VM restart.
 
-## State Ownership
+### State Ownership
 
 Give the SDK a dedicated home and configuration path under `microsandbox/`.
 The SDK sandbox name is the workspace name inside this private catalog; no name or native-ID mapping is needed.
@@ -188,7 +195,7 @@ Keep access directories mode `0700` and client private keys mode `0600`.
 The private host key and authorized client public key remain in the guest.
 Never copy client private keys, personal SSH identities, or host credentials into the guest.
 
-## Guest Profile
+### Guest Profile
 
 Build one Debian-based OCI image recipe with the guest account, tools, and OpenSSH configuration.
 Use 2 vCPUs and 4 GiB of memory, with no automatic idle expiry.
@@ -208,7 +215,7 @@ Configure the SDK's networking policy to allow public egress while restricting h
 Publish SSH on host loopback only.
 Validate these settings on the pinned runtime; Shroom implements no packet filtering or port-forwarding service.
 
-## Microsandbox Integration
+### Microsandbox Integration
 
 Use an explicit local SDK backend with both its home and configuration path under `microsandbox/`. Scope calls through
 the SDK's backend facility and preserve machine policy; reject conflicting mounts or credential projection. Keep SDK
@@ -235,7 +242,7 @@ Use the matching preinstalled 0.7.2 executable and firmware; the validation repo
 SDK runtime resolution checks the pair's paths, and SDK executable inspection rejects unexpected or absent versions.
 OpenSSH survives its launch command and caller exit in the tested guest profile.
 
-## Operation Flows and Failures
+### Operation Flows and Failures
 
 Creation validates the request, rejects existing native names or access directories, and generates the client key.
 It creates a detached sandbox through the SDK, provisions guest SSH through the SDK's administration channel,
@@ -284,7 +291,7 @@ Dropping the core releases its lock, not its workspaces.
 After host reboot, callers explicitly start them.
 Logs contain bounded diagnostics without private keys or authentication secrets.
 
-## Acceptance Tests
+### Acceptance Tests
 
 Exercise the workspace contract against the real microsandbox runtime on both target platforms.
 Focus on Shroom's SSH setup and selected SDK configuration; do not recreate upstream's general test suite.
@@ -309,9 +316,9 @@ Also check occupied ports, loopback-only publishing, and complete paginated disc
 The endpoint-refresh test exercises SSH trust at another endpoint; it adds no port-reassignment API.
 Native SSH forwarding is exercised through an external client; the core owns no application tunnels.
 
-## Organization and Validation
+### Organization and Validation
 
-Keep one crate with `lib.rs` for the public types, `core.rs` for SDK calls and operation flows,
+Keep the workspace core in one crate with `lib.rs` for the public types, `core.rs` for SDK calls and operation flows,
 and `access.rs` for keys, trust files, and SSH probing.
 Keep the image recipe and fixed guest SSH files under `images/workspace/`.
 Add modules only when implementation size makes them useful.
@@ -329,3 +336,75 @@ the core. Full application compatibility validation and runtime/image distributi
 
 If later validation exposes a gap requiring Shroom to implement VM supervision, persistence, or networking,
 revisit the runtime choice or scope before expanding the core.
+
+## Lume HTTP Client
+
+Shroom uses Lume through a typed Rust HTTP client in `crates/shroom-lume`.
+The caller supplies a separately installed, running Lume service on the same Mac.
+This follows the approved choice to use Lume's HTTP API: the reviewed Swift package exports an executable,
+so it cannot be imported as a Swift or Rust framework. Shroom invokes no Lume CLI commands.
+
+The client provides native VM operations for Linux and macOS guests. The SSH workspace contract remains
+defined in [SSH Workspace Core](#ssh-workspace-core); a Lume VM is not yet an implementation of that contract.
+The [workspace integration proposal](../proposals/lume-workspaces.md) identifies the service capabilities
+needed before both runtimes can share that interface.
+
+### Service and Storage
+
+`Client::new(Config)` validates configuration and constructs an HTTP connection pool without contacting
+the service or starting VMs. `Config` requires a literal loopback socket address, an absolute storage
+directory, and a positive request timeout of at most one hour. The timeout covers the complete exchange,
+including response-body reads. Installation, service supervision, and image preparation remain external.
+
+Every operation sends the storage directory using the endpoint's native query or JSON field.
+Use a dedicated Lume service and storage directory. The reviewed service caches running VMs by name alone,
+so storage arguments do not isolate concurrent same-name VMs in other roots handled by that service.
+Client clones share connections; they do not implement a catalog or an ownership lock.
+
+Storage paths must be UTF-8 and contain no parent components, control characters, or literal percent signs.
+Lume decodes storage query values twice, which makes a literal percent sequence ambiguous.
+The client encodes spaces as `%20` because Lume's Foundation parser leaves `+` literal.
+`VmName` accepts lowercase ASCII slugs of 1–48 characters, starting with a letter or digit;
+registry references and path separators are excluded.
+
+The client disables HTTP redirects, automatic retries, and ambient proxies. Responses are bounded to
+1 MiB, with error diagnostics limited to 1,024 characters. HTTP errors preserve their status and message;
+in particular, a native `400` is not translated into a missing-VM error. Cancelling or timing out a request
+does not undo work the service has already accepted.
+
+### Operations and Results
+
+| Rust operation | Native behavior |
+| --- | --- |
+| `list` / `get` | Read native VM state and available inspection fields within the storage scope |
+| `create` | Request Linux disk allocation or macOS installation from an explicit local IPSW |
+| `clone_vm` | Clone a prepared, stopped VM within the same storage scope |
+| `start` | Request headless execution with NAT networking |
+| `force_stop` | Invoke native stop, which may cut VM power or terminate the VM process |
+| `force_delete` | Invoke native deletion, which may stop a VM and permanently deletes its disks |
+
+Creation and start return `Accepted` for HTTP `202`; callers inspect `get` to observe subsequent state.
+The result is neither a completed boot nor authenticated SSH access. `VmState` preserves unrecognized
+states as `Unknown`, and sparse pulling responses leave unavailable fields as `None`.
+The `ssh_available` field is Lume's reachability hint, not a verified SSH connection.
+
+Linux creation allocates an empty VM; callers need a prepared bootable VM for cloning.
+macOS installation does not establish Shroom's guest account or SSH identity.
+Cloning copies the guest filesystem, including any embedded credentials and host keys.
+The client does not describe cloning as workspace provisioning.
+
+Start explicitly disables VNC, clipboard synchronization, and directory sharing.
+NAT remains Lume's native policy; it does not implement the core's restricted public egress or loopback
+SSH port publishing. Destructive native methods retain explicit `force_` names so they cannot be mistaken
+for the core's graceful shutdown and quiescent removal contracts.
+
+### Compatibility and Validation
+
+`REVIEWED_REVISION` records the Cua source commit used to verify request and response formats.
+It is a compatibility reference, not a runtime version negotiation mechanism.
+Use that revision with the [routing patch](../../integrations/lume/http-routing.patch), or an upstream
+revision verified to include an equivalent fix. The reviewed router does not match storage-scoped listing
+requests; the patch removes the query from route matching. The client never falls back to unscoped listing.
+
+The [evaluation](../evaluations/2026-09-20-lume-http/README.md) records HTTP fixture tests and executable
+Swift source checks. Live Lume service and VM acceptance for both guest operating systems remains outstanding.

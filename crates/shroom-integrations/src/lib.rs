@@ -101,6 +101,8 @@ pub enum Error {
     InvalidProgram,
     #[error("remote command arguments cannot contain NUL")]
     InvalidArgument,
+    #[error("Codex cannot register a remote directory with leading or trailing whitespace")]
+    InvalidCodexDirectory,
     #[error("guest web port {0} must be in 1024–65535")]
     InvalidGuestPort(u32),
     #[error(

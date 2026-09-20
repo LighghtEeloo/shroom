@@ -6,7 +6,7 @@ reproducible evidence and platform validation limits, and ideas describe the bro
 - [Shroom core](references/shroom-core.md): the microsandbox SSH workspace contract and the typed Rust
   HTTP client for a local Lume service, including their responsibilities and validation requirements.
 - [Desktop app](references/desktop-app.md): the Freya workspace shell, lifecycle and recovery flows,
-  SSH verification, command and configuration copying, and runtime setup.
+  SSH verification, native agent setup, managed web connections, connection copying, and runtime setup.
 - [Agent app integrations](references/agent-integrations.md): native SSH exports, guest command recipes,
   and loopback web forwarding for existing agent applications.
 - [Lume workspaces](proposals/lume-workspaces.md): service capabilities needed for the shared SSH workspace interface.

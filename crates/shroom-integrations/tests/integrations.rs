@@ -13,6 +13,42 @@ use shroom_integrations::{
 use support::Fixture;
 
 #[test]
+fn codex_handoff_encodes_the_remote_folder_and_rejects_silently_trimmed_paths() {
+    let fixture = Fixture::new();
+    for directory in [
+        "/workspace",
+        "/workspace/用户 files?x=1&enabled=false#%+'\"",
+    ] {
+        let mut connection = fixture.connection.clone();
+        connection.directory = directory.into();
+        let attachment = Attachment::new("shroom-test".parse().unwrap(), connection).unwrap();
+        let url = attachment.codex_project_url().unwrap();
+        assert_eq!(url.scheme(), "codex");
+        assert_eq!(url.host_str(), Some("settings"));
+        assert_eq!(url.path(), "/connections/ssh/add");
+        assert_eq!(url.fragment(), None);
+        assert_eq!(
+            url.query_pairs().collect::<Vec<_>>(),
+            vec![
+                ("name".into(), "shroom-test".into()),
+                ("projectPath".into(), directory.into()),
+                ("enabled".into(), "true".into())
+            ]
+        );
+    }
+    for directory in ["/workspace/trailing ", "/workspace/trailing\u{feff}"] {
+        let mut connection = fixture.connection.clone();
+        connection.directory = directory.into();
+        let attachment = Attachment::new("shroom-test".parse().unwrap(), connection).unwrap();
+        assert!(matches!(
+            attachment.codex_project_url(),
+            Err(Error::InvalidCodexDirectory)
+        ));
+        assert_eq!(attachment.connection().directory, directory);
+    }
+}
+
+#[test]
 fn aliases_and_ports_accept_concrete_values_and_reject_patterns_or_options() {
     for alias in ["a", "0", "shroom.project-2_test", &"a".repeat(128)] {
         assert_eq!(alias.parse::<SshAlias>().unwrap().as_str(), alias);

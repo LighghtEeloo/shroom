@@ -129,7 +129,7 @@ starts a workspace, then obtains fresh [connection details](shroom-core.md#ssh-i
 
 | Selected state | Emphasized action |
 | --- | --- |
-| Running, SSH verified | Copy the selected connection format |
+| Running, SSH verified | Copy the selected connection format or follow the selected agent's connection action |
 | Running, SSH unchecked or failed | Verify SSH |
 | Created, stopped, or crashed | Start workspace |
 | Paused | Stop workspace |
@@ -163,10 +163,11 @@ A verification result describes its recorded time, displayed in UTC. It is inval
 operation for that workspace, a changed connection, a nonrunning state, a directory change, or a failed catalog
 read. Reopening a directory begins with unchecked access. A running label alone never establishes readiness.
 
-The connection panel switches between **Command** and **SSH config**. Both are selectable and use the complete
-shared integration renderer. Copying fetches current core details again and checks them against the subsequent
-catalog snapshot before writing to the clipboard. A changed endpoint or failed catalog read discards the
-export. Connection text and endpoint details are withheld while a request is pending or the catalog is stale.
+The connection panel switches between **Command**, **SSH config**, and **Agents**. Command and configuration
+text are selectable and use the complete shared integration renderer. Copying fetches current core details
+again and checks them against the subsequent catalog snapshot before writing to the clipboard.
+A changed endpoint or failed catalog read discards the export. Connection text and endpoint details are withheld
+while a request is pending or the catalog is stale.
 Clipboard failures leave selectable connection text and an error.
 
 The POSIX-shell command works without editing SSH configuration. The config stanza belongs before matching
@@ -177,6 +178,78 @@ quoting, native client setup, and guest working-directory behavior.
 Details shows the current endpoint, user, identity path, guest directory, and host identity when available.
 Its **Inspect with msb** entry expands a selectable command with `MSB_HOME` and `MSB_CONFIG_PATH` pointing at
 this directory's private runtime storage. The default CLI catalog can therefore differ from Shroom's catalog.
+
+## Agent Connections
+
+The **Agents** tab offers Codex, Claude Desktop, Cursor, ZCode, Kimi, and DeepSeek Harness for the selected
+running workspace. Native applications receive the setup guidance and connection route defined by the
+[integration reference](agent-integrations.md#attachments-and-native-applications). Codex, Claude Desktop,
+and Cursor show the SSH alias, remote project folder, and complete copyable configuration. ZCode shows
+direct connection fields and the public host key, with its unverified host-key handling made explicit.
+Copying these fields follows the same freshness checks as other connection exports. Shroom opens documentation
+on request. Codex's existing primary action is **Add to Codex**, replacing its copy action; manual copying
+remains available in the **SSH config** tab.
+
+**Add to Codex** obtains current connection details for the running workspace, prepares its guest CLI,
+registers an SSH entry, and dispatches the [Codex project handoff](agent-integrations.md#codex-project-handoff).
+Its alias combines the workspace name and full host-key alias,
+distinguishing equal names across state directories and recreated workspaces.
+Repeating the action refreshes that entry with the current endpoint while retaining its trust pin.
+Codex controls the remote project, connection, and sign-in; Shroom copies no credentials.
+The completion notice reports URL dispatch, not successful registration or an authenticated Codex session.
+
+Guest preparation runs as the workspace user over the attachment's pinned SSH connection. It reuses an
+existing `codex` executable, or downloads the [official standalone installer](https://learn.chatgpt.com/docs/codex/cli)
+and runs it noninteractively with `~/.local/bin` as its install directory. The first installation needs guest
+internet access and has a five-minute deadline. A failed download is never executed; an existing broken CLI
+produces an error instead of being overwritten. A separate SSH login must run `codex --version` successfully
+within 30 seconds before Shroom changes SSH config or opens Codex. This verifies the login-shell `PATH` seen by
+the desktop app; a customized profile that omits the install directory receives recovery instructions.
+
+Registration places a marked Shroom-owned stanza at the start of `~/.ssh/config`, resetting `Host` scope before
+the original text. It updates only that alias's marked entry and preserves all other text. A new `.ssh` directory
+uses mode `0700`, a new config uses `0600`, and replacements retain the existing config's permissions.
+Before changing an existing file, the app saves its previous contents in a private
+`~/.ssh/config.shroom-backup-*` file. An unchanged entry requires no replacement or backup.
+
+An advisory lock serializes Shroom registrations; rereading before replacement detects intervening edits.
+The app stages and atomically installs the config only after bounded OpenSSH resolution agrees with the
+isolated stanza's connection and trust settings. This check includes system configuration, additive identities
+and forwards, and inherited commands. Conflicting defaults, unowned duplicate aliases in the main file,
+damaged markers, and symlinked or nonregular config files produce errors without replacing the config. Manual setup remains
+available for these cases. A failure to open Codex after saving leaves the entry available for retry.
+
+Registration is explicit: after an endpoint change, use **Add to Codex** again. Stopping or removing a workspace
+does not edit Codex projects or delete the SSH entry. The action does not imply that existing sessions survive
+a workspace restart.
+
+For Kimi and DeepSeek Harness, the app owns the local SSH launch and tunnel processes. Install the agent in
+the guest; authentication uses the agent's normal flow. The UI presents this sequence:
+
+1. **Launch** starts the installed guest executable with a requested guest port and shows its output.
+2. Paste the actual reported HTTP URL, including its login token when present, and choose a local browser port.
+3. **Connect web app** creates the loopback tunnel and checks HTTP reachability. Invalid URLs or ports leave
+   the launch and form available for correction; a failed connection closes its tunnel and allows retry.
+4. **Open in browser** and **Copy browser URL** become available after that check, retaining the reported path,
+   query, and fragment. **Web app reachable** describes HTTP reachability, not agent authentication or activity.
+
+The [web integration contract](agent-integrations.md#web-applications-and-forwarding) owns URL validation,
+launch arguments, and forwarding semantics. The app waits for the SSH tunnel's remote readiness marker before
+probing HTTP, so an unrelated local listener cannot establish readiness. The probe ignores host proxy settings
+and does not follow redirects; a response other than a server error permits the browser step.
+Forward setup has a 15-second deadline and HTTP probing an eight-second deadline.
+
+Launch and tunnel processes remain owned by the app while navigating between workspaces or agents.
+**Close web connection** terminates and reaps those local processes without stopping the VM. A guest app may
+survive its launch SSH connection; closing is not a claim that the remote app was stopped. Workspace stop,
+deletion, directory changes, and app exit close the affected connections. Refresh also closes sessions whose
+workspace connection changed or disappeared; a failed catalog read closes all managed web connections.
+A launch process exit closes its tunnel and withdraws browser actions. Reconnection is explicit.
+
+Process output is capped at 32 KiB per session, stripped of terminal control sequences, and kept only in
+memory. Reported URLs can contain login tokens; they are not included in activity labels or diagnostics.
+Output folds away once the browser connection is ready. Web form state is scoped to the workspace connection
+and selected app; errors and pending operations preserve it, while changing that scope clears it.
 
 ## Responsiveness and Activity
 
@@ -201,6 +274,8 @@ when changing directories. Error details remain selectable.
 UI model, failure reconciliation, selection changes, unavailable runtime retries, and Freya interaction tests
 for deletion confirmation, result delivery after confirmation closes, disabled actions, compact navigation,
 appearance changes, and preservation of form input.
+Agent tests cover all six choices, live process updates, port and URL rejection, token-safe diagnostics,
+output bounds, process cleanup, and withholding browser actions for pending, failed, or stale connections.
 Readiness tests distinguish discovery and export from authenticated verification and invalidate old proof
 when the endpoint, runtime state, directory, or catalog availability changes.
 These tests do not boot VMs.
@@ -223,6 +298,21 @@ SHROOM_TEST_IMAGE_ARCHIVE=/path/to/workspace.tar \
 
 The test uses port 34882 unless overridden with `SHROOM_APP_TEST_PORT`. It removes its disposable workspace
 and temporary root on success, and preserves the printed state root for diagnosis on failure.
+
+Managed web integration has a separate opt-in test. It installs small fixture executables into a disposable
+guest, exercises both launch recipes and real HTTP forwarding, rejects an occupied port and stopped workspace,
+and checks cleanup on close, stop/start, and directory disconnect. It makes no agent-provider requests:
+
+```sh
+SHROOM_TEST_RUNTIME=/path/to/msb \
+SHROOM_TEST_FIRMWARE=/path/to/libkrunfw \
+SHROOM_TEST_IMAGE_ARCHIVE=/path/to/workspace.tar \
+  cargo test -p shroom-app agents::tests::managed_web_launch_forward_and_shutdown_with_a_real_guest \
+  --locked -- --ignored --exact --nocapture
+```
+
+It uses ports 34982–34985 by default; `SHROOM_WEB_TEST_PORT` overrides the first port. Success removes the guest
+and temporary root; failure preserves the printed root for diagnosis and cleanup.
 
 Another opt-in test clicks through incomplete-setup cleanup in Freya against a real core in a temporary
 directory, verifies removal, and checks that refresh and disconnect remain usable. It does not boot a VM:

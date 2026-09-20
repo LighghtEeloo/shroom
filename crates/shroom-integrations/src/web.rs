@@ -83,6 +83,9 @@ impl Attachment {
 }
 
 impl WebTunnel {
+    /// Emitted by `command_with_readiness` only after SSH has established its forwards.
+    pub const READY_MESSAGE: &'static str = "shroom-web-tunnel-ready";
+
     /// Retain the guest's path, query, and fragment while changing only host and port.
     pub fn local_url(&self) -> Url {
         let mut url = self.guest.0.clone();
@@ -93,6 +96,23 @@ impl WebTunnel {
 
     /// Fail if OpenSSH cannot bind the requested host port. Application readiness is separate.
     pub fn command(&self) -> Command {
+        let mut command = self.forward_command();
+        command.arg("-N").arg(self.attachment.alias.as_str());
+        command
+    }
+
+    /// Keep stdin open and wait for READY_MESSAGE on stdout before probing the local HTTP URL.
+    /// The guest's fixed `cat` process ends when stdin closes. It does not manage the web app.
+    pub fn command_with_readiness(&self) -> Command {
+        let mut command = self.forward_command();
+        command.arg(self.attachment.alias.as_str()).arg(format!(
+            "printf '%s\\n' {}; exec cat >/dev/null",
+            Self::READY_MESSAGE
+        ));
+        command
+    }
+
+    fn forward_command(&self) -> Command {
         let guest_host = match self.guest.0.host().expect("validated URL") {
             Host::Ipv6(ip) => format!("[{ip}]"),
             _ => "127.0.0.1".to_owned(),
@@ -100,7 +120,6 @@ impl WebTunnel {
         let mut command = self.attachment.ssh_command();
         command
             .args([
-                "-N",
                 "-T",
                 "-o",
                 "ExitOnForwardFailure=yes",
@@ -112,8 +131,7 @@ impl WebTunnel {
                 "127.0.0.1:{}:{guest_host}:{}",
                 self.local_port,
                 self.guest.0.port().expect("validated port")
-            ))
-            .arg(self.attachment.alias.as_str());
+            ));
         command
     }
 }

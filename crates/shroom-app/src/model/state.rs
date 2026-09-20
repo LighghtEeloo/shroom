@@ -33,6 +33,7 @@ pub enum ExportFormat {
     #[default]
     Command,
     Config,
+    ConnectionDetails,
 }
 
 impl ExportFormat {
@@ -40,6 +41,7 @@ impl ExportFormat {
         match self {
             Self::Command => "Command",
             Self::Config => "SSH config",
+            Self::ConnectionDetails => "Connection details",
         }
     }
 
@@ -47,6 +49,7 @@ impl ExportFormat {
         match self {
             Self::Command => "Copy command",
             Self::Config => "Copy SSH config",
+            Self::ConnectionDetails => "Copy connection details",
         }
     }
 
@@ -54,6 +57,9 @@ impl ExportFormat {
         match self {
             Self::Command => "SSH command copied",
             Self::Config => "SSH config copied. Place it before matching Host defaults.",
+            Self::ConnectionDetails => {
+                "Connection fields copied. Verify the host key in your client before connecting."
+            }
         }
     }
 }
@@ -84,6 +90,16 @@ impl ConnectionExport {
             text: match format {
                 ExportFormat::Command => attachment.ssh_command_line(),
                 ExportFormat::Config => attachment.ssh_config(),
+                ExportFormat::ConnectionDetails => format!(
+                    "Host: {}\nPort: {}\nUser: {}\nIdentity file: {}\nProject directory: {}\nPublic host key: {}\nHost key alias: {}",
+                    connection.endpoint.ip(),
+                    connection.endpoint.port(),
+                    connection.user,
+                    connection.identity_file.display(),
+                    connection.directory,
+                    connection.host_key.to_openssh()?,
+                    connection.host_key_alias,
+                ),
             },
             format,
             connection,
@@ -92,15 +108,20 @@ impl ConnectionExport {
 
     pub fn matches(connection: &SshConnection, workspace: &Workspace) -> bool {
         workspace.state == SandboxStatus::Running
-            && workspace.ssh.as_ref().is_some_and(|current| {
-                current.endpoint == connection.endpoint
-                    && current.user == connection.user
-                    && current.identity_file == connection.identity_file
-                    && current.known_hosts_file == connection.known_hosts_file
-                    && current.host_key == connection.host_key
-                    && current.host_key_alias == connection.host_key_alias
-                    && current.directory == connection.directory
-            })
+            && workspace
+                .ssh
+                .as_ref()
+                .is_some_and(|current| Self::same_connection(connection, current))
+    }
+
+    pub fn same_connection(connection: &SshConnection, current: &SshConnection) -> bool {
+        current.endpoint == connection.endpoint
+            && current.user == connection.user
+            && current.identity_file == connection.identity_file
+            && current.known_hosts_file == connection.known_hosts_file
+            && current.host_key == connection.host_key
+            && current.host_key_alias == connection.host_key_alias
+            && current.directory == connection.directory
     }
 }
 

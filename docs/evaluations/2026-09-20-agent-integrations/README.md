@@ -4,7 +4,7 @@ The [integration contract](../../references/agent-integrations.md) is implemente
 The library exports connections and commands; desktop app installation and authenticated agent sessions
 are separate compatibility checks. This report keeps transport evidence distinct from those checks.
 
-All eight ordinary integration tests passed on macOS ARM64.
+All ten ordinary integration tests passed on macOS ARM64.
 The three reference examples compile as Rustdoc tests, and formatting and Clippy with warnings denied pass.
 The VM acceptance test passed in 2.18 seconds against microsandbox 0.7.2 and the prepared image used by the
 core acceptance run. It also authenticated with copied access paths containing spaces, percent signs,
@@ -67,3 +67,51 @@ and reconnects. Establish ZCode's explicit host-key pinning path before marking 
 Kimi and DeepSeek web applications with the installed guest versions and their normal login flows.
 The transport tests do not certify those applications. Linux x86-64 VM acceptance and a direct OCI build of the
 guest Dockerfile remain unrun on this macOS ARM64 development host.
+
+## Codex Project Handoff
+
+The installed desktop app at `/Applications/ChatGPT.app`, version **26.915.31945**, was inspected read-only
+on 2026-09-20. Its `Info.plist` registers the `codex` URL scheme. In `Contents/Resources/app.asar`,
+`.vite/build/bootstrap-DF0QwAxC.js` recognizes `settings/connections/ssh/add`, accepting `name` (or `alias`),
+`projectPath`, and `enabled`. The parser trims the folder parameter and permits only the expected query keys.
+
+The renderer in `webview/assets/remote-connections-settings-b8d26c3afb7b.js` handles this route by calling
+SSH connection registration, creating or reusing a project matching the host and absolute remote path,
+selecting the project, and enabling the connection when requested. This establishes a concrete handoff
+mechanism in the installed build; it is not a stability guarantee for other desktop versions.
+The [official guide](https://learn.chatgpt.com/docs/remote-connections#connect-to-an-ssh-host)
+documents native SSH projects and guest CLI requirements but does not document this route.
+The installed `codex app --help` exposes a local workspace path, with no SSH-host option.
+
+Shroom's regression tests exercise URL encoding for Unicode, spaces, query/fragment delimiters, quotes,
+and percent signs, paired with rejection of a directory that Codex would trim. App tests use temporary SSH
+configuration and real `ssh -G` resolution to cover installation, repeat registration, endpoint refresh,
+unrelated-host preservation, private backups, file modes, rejected inherited identities/commands/forwards,
+malformed config, damaged ownership markers, alias conflicts, concurrent edits, lock release, and symlinks.
+The UI test verifies that **Add to Codex** replaces the existing primary copy action only for Codex.
+The app's 40 ordinary tests, full workspace tests, Clippy with warnings denied, formatting, and native build
+pass. The full workspace run needed loopback permission for the existing Lume HTTP fixture listeners;
+the first sandboxed run could not bind those listeners.
+
+```sh
+cargo test -p shroom-integrations -p shroom-app --locked
+```
+
+These checks do not register a project in the user's desktop app or edit their SSH config. A live authenticated
+Codex guest session, including the app's consent and login flows, remains an explicit compatibility check.
+
+### Missing Guest CLI Regression
+
+A live **Add to Codex** attempt exposed a missing prerequisite: the handoff opened the desktop app without
+installing the guest CLI. Guest preparation now follows the
+[desktop contract](../../references/desktop-app.md#agent-connections) before registration or URL dispatch.
+Seven new regression tests cover a missing CLI, reuse of existing installations, preservation of a broken CLI,
+failed downloads and installers, missing output binaries, login `PATH` failures, bounded diagnostics, process
+timeouts, and the attachment's pinned SSH command. All 47 ordinary app tests, ten integration tests, and three
+Rustdoc examples passed; Clippy with warnings denied and formatting also passed.
+
+The failure was reproduced in the existing Debian ARM64 `zydeco` guest on 2026-09-20: SSH authenticated as
+`developer`, while the login shell had no `codex` command. Running the new setup script installed the official
+standalone CLI **0.155.1** without root or Node.js. A fresh SSH login then resolved
+`/home/developer/.local/bin/codex` and successfully ran `codex --version`. `codex login status` reported
+`Not logged in`; authenticated app operation remains unverified and requires the user's sign-in.

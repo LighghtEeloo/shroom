@@ -1,6 +1,26 @@
 use std::process::Command;
 
-use crate::{Attachment, GuestPort, RemoteCommand, Terminal};
+use crate::{Attachment, Error, GuestPort, RemoteCommand, Result, Terminal};
+
+impl Attachment {
+    /// Register this concrete SSH alias and select its remote folder in the Codex desktop app.
+    /// Install the SSH stanza first. This route was inspected in desktop version 26.915.31945;
+    /// it is not a documented public API, and opening it does not prove connection success.
+    pub fn codex_project_url(&self) -> Result<url::Url> {
+        let directory = &self.connection().directory;
+        // Codex trims this query parameter; never silently select a different directory.
+        if directory.trim_matches(|c: char| c.is_whitespace() || c == '\u{feff}') != directory {
+            return Err(Error::InvalidCodexDirectory);
+        }
+        let mut url = url::Url::parse("codex://settings/connections/ssh/add")
+            .expect("fixed Codex connection route");
+        url.query_pairs_mut()
+            .append_pair("name", self.alias().as_str())
+            .append_pair("projectPath", directory)
+            .append_pair("enabled", "true");
+        Ok(url)
+    }
+}
 
 /// Native applications whose documented remote workflow consumes SSH connection information.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -21,6 +41,15 @@ pub enum HostKeyHandling {
 }
 
 impl NativeApp {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Codex => "Codex",
+            Self::ClaudeDesktop => "Claude Desktop",
+            Self::Cursor => "Cursor",
+            Self::ZCode => "ZCode",
+        }
+    }
+
     pub fn host_key_handling(self) -> HostKeyHandling {
         match self {
             Self::ZCode => HostKeyHandling::ClientVerificationRequired,
@@ -65,6 +94,27 @@ pub enum WebApp {
 }
 
 impl WebApp {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Kimi => "Kimi",
+            Self::DeepSeekHarness => "DeepSeek Harness",
+        }
+    }
+
+    pub fn executable(self) -> &'static str {
+        match self {
+            Self::Kimi => "kimi",
+            Self::DeepSeekHarness => "dsh",
+        }
+    }
+
+    pub fn documentation(self) -> &'static str {
+        match self {
+            Self::Kimi => "https://github.com/MoonshotAI/kimi-cli",
+            Self::DeepSeekHarness => "https://github.com/deepseek-ai/deepseek-harness",
+        }
+    }
+
     pub fn default_port(self) -> GuestPort {
         GuestPort::try_from(match self {
             Self::Kimi => 5494,

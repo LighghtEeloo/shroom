@@ -9,14 +9,16 @@ publish.workspace = true
 [dependencies]
 freya = { workspace = true }
 microsandbox = { workspace = true }
+open = { workspace = true }
+reqwest = { workspace = true }
 shroom-core = { workspace = true }
 shroom-integrations = { workspace = true }
+tempfile = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]
 freya-testing = { workspace = true }
-tempfile = { workspace = true }
 
 [lints]
 workspace = true

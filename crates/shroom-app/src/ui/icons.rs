@@ -27,6 +27,8 @@ pub(super) enum Icon {
     Cpu,
     CircleCheck,
     CircleAlert,
+    Globe,
+    ExternalLink,
 }
 
 impl Icon {
@@ -54,6 +56,8 @@ impl Icon {
             Self::Cpu => lucide::cpu(),
             Self::CircleCheck => lucide::circle_check(),
             Self::CircleAlert => lucide::circle_alert(),
+            Self::Globe => lucide::globe(),
+            Self::ExternalLink => lucide::external_link(),
         }
         .into()
     }

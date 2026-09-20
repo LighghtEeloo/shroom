@@ -4,8 +4,10 @@ use microsandbox::{Image, LocalBackend, MicrosandboxError};
 use shroom_core::{
     Config, Core, HostPort, SandboxStatus, SshConnection, WORKSPACE_IMAGE, Workspace, WorkspaceName,
 };
-use shroom_integrations::Attachment;
+use shroom_integrations::{Attachment, GuestPort, GuestWebUrl, WebApp};
 use tokio::sync::Mutex;
+
+use crate::agents::AgentManager;
 
 mod state;
 pub use state::*;
@@ -30,6 +32,12 @@ pub enum Error {
     ImageArchitecture(Option<String>),
     #[error("Workspace {0} now exists. Refresh and use its workspace controls instead.")]
     WorkspaceExists(WorkspaceName),
+    #[error("Web ports must be whole numbers from 1024 to 65535")]
+    InvalidWebPort,
+    #[error(transparent)]
+    Agent(#[from] crate::agents::Error),
+    #[error(transparent)]
+    Codex(#[from] crate::codex::Error),
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]
@@ -128,6 +136,37 @@ pub enum Command {
     Remove(WorkspaceName),
     Cleanup(WorkspaceName),
     Export(WorkspaceName, ExportFormat),
+    AddToCodex(WorkspaceName),
+    LaunchWeb(WorkspaceName, WebApp, GuestPort),
+    ForwardWeb(WorkspaceName, WebApp, WebForward),
+    CloseWeb(WorkspaceName, WebApp),
+}
+
+#[derive(Clone)]
+pub struct WebForward {
+    pub guest: GuestWebUrl,
+    pub local_port: HostPort,
+}
+
+// A reported URL may contain a login token; diagnostics must not serialize it.
+impl std::fmt::Debug for WebForward {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WebForward")
+            .field("local_port", &self.local_port)
+            .finish_non_exhaustive()
+    }
+}
+
+impl WebForward {
+    pub fn parse(url: &str, port: &str) -> Result<Self> {
+        Ok(Self {
+            guest: url.parse()?,
+            local_port: port
+                .parse::<u32>()
+                .map_err(|_| Error::InvalidWebPort)?
+                .try_into()?,
+        })
+    }
 }
 
 impl Command {
@@ -144,6 +183,10 @@ impl Command {
             Self::Remove(_) => "Removing workspace…",
             Self::Cleanup(_) => "Removing incomplete setup…",
             Self::Export(..) => "Reading current SSH details…",
+            Self::AddToCodex(_) => "Preparing Codex in workspace and opening project…",
+            Self::LaunchWeb(..) => "Launching web app through SSH…",
+            Self::ForwardWeb(..) => "Opening tunnel and checking web app…",
+            Self::CloseWeb(..) => "Closing web connection…",
         }
     }
 
@@ -153,7 +196,11 @@ impl Command {
             | Self::Start(name)
             | Self::Verify(name)
             | Self::Stop(name)
-            | Self::Export(name, _) => Some(name.clone()),
+            | Self::Export(name, _)
+            | Self::AddToCodex(name)
+            | Self::LaunchWeb(name, ..)
+            | Self::ForwardWeb(name, ..)
+            | Self::CloseWeb(name, _) => Some(name.clone()),
             _ => None,
         }
     }
@@ -166,7 +213,11 @@ impl Command {
             | Self::Stop(name)
             | Self::Remove(name)
             | Self::Cleanup(name)
-            | Self::Export(name, _) => Some(name),
+            | Self::Export(name, _)
+            | Self::AddToCodex(name)
+            | Self::LaunchWeb(name, ..)
+            | Self::ForwardWeb(name, ..)
+            | Self::CloseWeb(name, _) => Some(name),
             _ => None,
         }
     }
@@ -184,10 +235,16 @@ impl Command {
             Self::Remove(_) => "Workspace deleted",
             Self::Cleanup(_) => "Incomplete setup removed",
             Self::Export(..) => "Current SSH details read",
+            Self::AddToCodex(_) => {
+                "Codex CLI ready; project sent to Codex. Finish any sign-in or connection setup there."
+            }
+            Self::LaunchWeb(..) => "Web launch started. Read its output for the actual URL.",
+            Self::ForwardWeb(..) => "Web tunnel checked",
+            Self::CloseWeb(..) => "SSH launch and tunnel closed. The workspace is still running.",
         }
     }
 
-    async fn execute(self, slot: &mut Option<Session>) -> Result<Outcome> {
+    async fn execute(self, slot: &mut Option<Session>, agents: &AgentManager) -> Result<Outcome> {
         match self {
             Self::Open { state_dir, config } => {
                 if slot.is_some() {
@@ -197,6 +254,7 @@ impl Command {
                 Ok(Outcome::Complete)
             }
             Self::Disconnect => {
+                agents.close(None).await;
                 *slot = None;
                 Ok(Outcome::Complete)
             }
@@ -232,8 +290,14 @@ impl Command {
                             workspace.ssh.ok_or(Error::SshUnavailable)?,
                         )));
                     }
-                    Self::Stop(name) => session.core.stop(&name).await?,
-                    Self::Remove(name) => session.core.remove(&name).await?,
+                    Self::Stop(name) => {
+                        agents.close(Some((&name, None))).await;
+                        session.core.stop(&name).await?;
+                    }
+                    Self::Remove(name) => {
+                        agents.close(Some((&name, None))).await;
+                        session.core.remove(&name).await?;
+                    }
                     Self::Cleanup(name) => session.cleanup(&name).await?,
                     Self::Export(name, format) => {
                         // Always fetch again: list snapshots can outlive an endpoint.
@@ -247,6 +311,22 @@ impl Command {
                             ConnectionExport::with_connection(&name, connection, format)?,
                         )));
                     }
+                    Self::AddToCodex(name) => {
+                        // Resolve current runtime details before touching the user's SSH config.
+                        let attachment = session.attachment(&name).await?;
+                        crate::codex::Codex::add(&name, attachment.connection().clone()).await?;
+                    }
+                    Self::LaunchWeb(name, app, port) => {
+                        let attachment = session.attachment(&name).await?;
+                        agents.launch(name, app, attachment, port).await?;
+                    }
+                    Self::ForwardWeb(name, app, forward) => {
+                        let attachment = session.attachment(&name).await?;
+                        agents
+                            .forward(&name, app, attachment, forward.guest, forward.local_port)
+                            .await?;
+                    }
+                    Self::CloseWeb(name, app) => agents.close(Some((&name, Some(app)))).await,
                     Self::Open { .. } | Self::Disconnect => unreachable!(),
                 }
                 Ok(Outcome::Complete)
@@ -263,6 +343,17 @@ struct Session {
 }
 
 impl Session {
+    async fn attachment(&self, name: &WorkspaceName) -> Result<Attachment> {
+        let workspace = self.core.get(name).await?;
+        if workspace.state != SandboxStatus::Running {
+            return Err(Error::SshUnavailable);
+        }
+        Ok(Attachment::new(
+            format!("shroom-{name}").parse()?,
+            workspace.ssh.ok_or(Error::SshUnavailable)?,
+        )?)
+    }
+
     async fn open(state_dir: PathBuf, config: Config) -> Result<Self> {
         let core = Core::open(state_dir.clone(), config.clone()).await?;
         let state_dir = state_dir.canonicalize()?;
@@ -375,6 +466,7 @@ pub struct Catalog {
 #[derive(Default)]
 pub struct Backend {
     session: Mutex<Option<Session>>,
+    pub agents: AgentManager,
 }
 
 pub struct Reply {
@@ -389,12 +481,16 @@ impl Backend {
     pub async fn execute(&self, command: Command) -> Reply {
         let mut session = self.session.lock().await;
         let selection = command.selection();
-        let outcome = command.execute(&mut session).await;
+        let outcome = command.execute(&mut session, &self.agents).await;
         // Failures may leave native artifacts, so refresh even when the operation fails.
         let (catalog, image) = match session.as_ref() {
             Some(session) => (session.catalog().await, session.image_status().await),
             None => (Ok(Catalog::default()), Ok(ImageStatus::Unknown)),
         };
+        match &catalog {
+            Ok(catalog) => self.agents.reconcile(&catalog.workspaces).await,
+            Err(_) => self.agents.close(None).await,
+        }
         Reply {
             session: session.as_ref().map(|session| SessionInfo {
                 state_dir: session.state_dir.clone(),

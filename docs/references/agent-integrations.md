@@ -62,6 +62,29 @@ support for `HostKeyAlias` or the dedicated known-hosts file. Verify a supported
 client before using it, and refresh cached endpoint fields on reconnect. Grok Bot remains deferred because
 the product investigation has not established a workspace-bound connection path.
 
+### Codex Project Handoff
+
+`Attachment::codex_project_url()` builds a desktop handoff for the attachment's SSH alias and guest directory.
+The caller installs the complete SSH stanza before opening the returned URL with the operating system:
+
+```text
+codex://settings/connections/ssh/add?name=<alias>&projectPath=<encoded-absolute-directory>&enabled=true
+```
+
+Query values are URL-encoded independently. Codex trims the folder parameter, so the builder rejects leading
+or trailing whitespace rather than opening a different directory. The inspected desktop handler registers
+the alias, creates or reuses its remote project, selects that project, and enables the connection.
+The caller prepares the guest CLI; Codex owns folder consent and authentication. Dispatching a URL does not
+establish that the app accepted it or that the remote session connected.
+
+This route was inspected in desktop version **26.915.31945**. The public
+[SSH connection guide](https://learn.chatgpt.com/docs/remote-connections#connect-to-an-ssh-host)
+documents the manual workflow, but does not specify this deep link as a stable public API.
+The [evaluation](../evaluations/2026-09-20-agent-integrations/README.md#codex-project-handoff)
+records the source evidence and remaining live check. Keep the manual setup route available across app versions.
+The [desktop app](desktop-app.md#agent-connections) owns guest CLI preparation, registration of Shroom's SSH entry,
+and URL dispatch; this library only builds the URL.
+
 ## Guest Commands
 
 `Attachment::command` builds a `std::process::Command` for host OpenSSH. It ignores ambient SSH configuration
@@ -139,6 +162,12 @@ startup and HTTP response before presenting its local URL as ready. The
 [DeepSeek web CLI reference](https://github.com/deepseek-ai/deepseek-harness/blob/master/apps/cli/reference/README.md#web-profile)
 describes its startup and browser behavior. Application authentication remains inside the guest.
 
+For callers that need a positive forwarding signal, `command_with_readiness()` runs a fixed guest command
+which emits `WebTunnel::READY_MESSAGE` after SSH establishes the forwards, then waits on stdin. Keep its input
+pipe open and drain stdout and stderr. With Tokio, take `Child::stdin` out before awaiting `Child::wait`, which
+otherwise closes that pipe. Receiving the marker proves forwarding setup; it still requires a separate HTTP
+check. The ordinary `command()` remains suitable for callers that manage readiness separately.
+
 ## Ownership and Limits
 
 Every launch method returns an unstarted command. The caller owns spawning, draining output, observing exit,
@@ -151,3 +180,6 @@ Installers, automatic app registration, credential copying, browser launching, g
 and automatic reconnection remain caller responsibilities. VM stop/start ends existing sessions and forwards;
 obtain fresh core connection details, restart the required guest app, and create new commands afterward.
 The integration layer has no resident process, application protocol, or second workspace catalog.
+The [desktop app](desktop-app.md#agent-connections) implements Codex SSH registration and handoff, plus the
+caller's managed launch, output, tunnel, HTTP check, browser action, and shutdown responsibilities for
+Kimi and DeepSeek Harness.

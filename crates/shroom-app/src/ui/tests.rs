@@ -196,6 +196,168 @@ fn connection_tabs_details_and_compact_navigation_remain_accessible() {
 }
 
 #[test]
+fn agent_picker_exposes_each_native_route_and_both_web_launchers() {
+    let mut runner = Fixture::runner(Fixture::verified(), (1120., 1080.));
+    Fixture::click(&mut runner, "Agents");
+    for app in [
+        shroom_integrations::NativeApp::Codex,
+        shroom_integrations::NativeApp::ClaudeDesktop,
+        shroom_integrations::NativeApp::Cursor,
+        shroom_integrations::NativeApp::ZCode,
+    ] {
+        Fixture::click(&mut runner, app.name());
+        assert!(Fixture::label(&runner, &format!("Connect with {}", app.name())).is_some());
+        if app == shroom_integrations::NativeApp::Codex {
+            assert!(
+                Fixture::label(&runner, "Add to Codex")
+                    .unwrap()
+                    .is_visible()
+            );
+            assert!(Fixture::label(&runner, "Copy SSH config").is_none());
+        } else {
+            assert!(Fixture::label(&runner, app.setup()).is_some());
+            assert!(Fixture::label(&runner, "Add to Codex").is_none());
+        }
+    }
+    assert!(
+        Fixture::label(
+            &runner,
+            "Host-key verification in ZCode is not yet validated."
+        )
+        .is_some()
+    );
+    assert!(Fixture::label(&runner, "Copy connection details").is_some());
+    for app in [
+        shroom_integrations::WebApp::Kimi,
+        shroom_integrations::WebApp::DeepSeekHarness,
+    ] {
+        Fixture::click(&mut runner, app.name());
+        assert!(
+            Fixture::label(&runner, &format!("Launch {}", app.name()))
+                .unwrap()
+                .is_visible()
+        );
+        assert!(Fixture::paragraph(&runner, &app.default_port().to_string()).is_some());
+        assert!(Fixture::label(&runner, "Open in browser").is_none());
+    }
+    Fixture::click(&mut runner, "Command");
+    assert!(Fixture::label(&runner, "Copy command").is_some());
+}
+
+#[test]
+fn invalid_web_launch_input_is_retained_without_dispatching() {
+    let mut runner = Fixture::runner(Fixture::verified(), (1120., 1080.));
+    Fixture::click(&mut runner, "Agents");
+    Fixture::click(&mut runner, "Kimi");
+    let center = Fixture::paragraph(&runner, "5494")
+        .unwrap()
+        .layout()
+        .area
+        .center();
+    runner.click_cursor((f64::from(center.x), f64::from(center.y)));
+    runner.write_text("oops");
+    Fixture::click(&mut runner, "Launch Kimi");
+    assert!(
+        Fixture::paragraph(&runner, &crate::model::Error::InvalidWebPort.to_string()).is_some()
+    );
+    assert!(Fixture::label(&runner, "Launching web app through SSH…").is_none());
+    assert!(
+        runner
+            .find(|node, element| Paragraph::try_downcast(element)
+                .filter(|paragraph| paragraph
+                    .spans
+                    .iter()
+                    .any(|span| span.text.contains("oops")))
+                .map(|_| node))
+            .is_some()
+    );
+}
+
+#[test]
+fn web_browser_actions_require_a_checked_current_connection() {
+    use crate::agents::TunnelState;
+    use shroom_integrations::WebApp;
+    for (tunnel, pending, ready) in [
+        (TunnelState::Idle, false, false),
+        (TunnelState::Connecting, false, false),
+        (TunnelState::Failed("Port is occupied".into()), false, false),
+        (
+            TunnelState::Ready("http://127.0.0.1:5494/?token=preview".into()),
+            false,
+            true,
+        ),
+        (
+            TunnelState::Ready("http://127.0.0.1:5494/?token=preview".into()),
+            true,
+            false,
+        ),
+    ] {
+        let app = Shroom {
+            initial: Model {
+                pending: pending.then_some(Command::Refresh),
+                ..Fixture::verified()
+            },
+            ..Shroom::default()
+        };
+        app.backend.agents.preview("project", WebApp::Kimi, tunnel);
+        let mut runner = Fixture::with_app(app, (1120., 1080.));
+        Fixture::click(&mut runner, "Agents");
+        Fixture::click(&mut runner, "Kimi");
+        assert_eq!(Fixture::label(&runner, "Open in browser").is_some(), ready);
+        assert_eq!(Fixture::label(&runner, "Copy browser URL").is_some(), ready);
+    }
+    let mut initial = Fixture::verified();
+    initial.workspaces[0]
+        .ssh
+        .as_mut()
+        .unwrap()
+        .endpoint
+        .set_port(3333);
+    let app = Shroom {
+        initial,
+        ..Shroom::default()
+    };
+    app.backend.agents.preview(
+        "project",
+        WebApp::Kimi,
+        TunnelState::Ready("http://127.0.0.1:5494/?token=preview".into()),
+    );
+    let mut runner = Fixture::with_app(app, (1120., 1080.));
+    Fixture::click(&mut runner, "Agents");
+    Fixture::click(&mut runner, "Kimi");
+    assert!(Fixture::label(&runner, "Open in browser").is_none());
+}
+
+#[test]
+fn web_process_updates_reach_the_ui_after_navigation() {
+    let app = Shroom {
+        initial: Fixture::verified(),
+        ..Shroom::default()
+    };
+    let backend = app.backend.clone();
+    let mut runner = Fixture::with_app(app, (1120., 1080.));
+    Fixture::click(&mut runner, "Agents");
+    Fixture::click(&mut runner, "Kimi");
+    backend.agents.preview(
+        "project",
+        shroom_integrations::WebApp::Kimi,
+        crate::agents::TunnelState::Ready("http://127.0.0.1:5494/".into()),
+    );
+    Fixture::settle(&mut runner, |runner| {
+        Fixture::label(runner, "Open in browser").is_some()
+    });
+    backend.agents.preview(
+        "project",
+        shroom_integrations::WebApp::Kimi,
+        crate::agents::TunnelState::Failed("Tunnel closed".into()),
+    );
+    Fixture::settle(&mut runner, |runner| {
+        Fixture::label(runner, "Tunnel closed").is_some()
+    });
+    assert!(Fixture::label(&runner, "Open in browser").is_none());
+}
+
+#[test]
 fn icon_controls_support_keyboard_activation_and_named_tooltips() {
     let mut runner = Fixture::runner(Fixture::verified(), (820., 640.));
     // The first compact toolbar control is reachable through normal keyboard navigation.
@@ -255,6 +417,11 @@ fn pending_operations_expose_disabled_icon_actions() {
         Fixture::click(&mut runner, name);
     }
     assert!(Fixture::label(&runner, "Stop workspace").is_none());
+    assert!(Fixture::label(&runner, "Refreshing workspaces…").is_some());
+    Fixture::click(&mut runner, "Agents");
+    assert!(Fixture::label(&runner, "Add to Codex").is_some());
+    Fixture::click(&mut runner, "Add to Codex");
+    assert!(Fixture::label(&runner, "Registering SSH connection and opening Codex…").is_none());
     assert!(Fixture::label(&runner, "Refreshing workspaces…").is_some());
     // Inspection remains available while the worker is busy.
     Fixture::click(&mut runner, "Toggle workspace details");
@@ -543,4 +710,35 @@ fn render_preview() {
     Fixture::screenshot(&mut new_workspace, format!("{directory}/create.png"));
     Fixture::click(&mut recovery, "Local workspaces");
     Fixture::screenshot(&mut recovery, format!("{directory}/environment.png"));
+    for (theme, filename) in [
+        (PreferredTheme::Light, "agents-light"),
+        (PreferredTheme::Dark, "agents-dark"),
+    ] {
+        let (mut runner, _) = Fixture::themed(Fixture::verified(), (1120., 800.), theme);
+        Fixture::click(&mut runner, "Agents");
+        Fixture::screenshot(&mut runner, format!("{directory}/{filename}.png"));
+    }
+    let mut agents = Fixture::runner(Fixture::verified(), (820., 640.));
+    Fixture::click(&mut agents, "Agents");
+    assert!(
+        Fixture::label(&agents, "Add to Codex")
+            .unwrap()
+            .is_visible()
+    );
+    Fixture::screenshot(&mut agents, format!("{directory}/agents-codex-compact.png"));
+    Fixture::click(&mut agents, "DeepSeek Harness");
+    Fixture::screenshot(&mut agents, format!("{directory}/agents-compact.png"));
+    let app = Shroom {
+        initial: Fixture::verified(),
+        ..Shroom::default()
+    };
+    app.backend.agents.preview(
+        "project",
+        shroom_integrations::WebApp::Kimi,
+        crate::agents::TunnelState::Ready("http://127.0.0.1:5494/?token=preview".into()),
+    );
+    let mut agents = Fixture::with_app(app, (1120., 1000.));
+    Fixture::click(&mut agents, "Agents");
+    Fixture::click(&mut agents, "Kimi");
+    Fixture::screenshot(&mut agents, format!("{directory}/agents-ready.png"));
 }

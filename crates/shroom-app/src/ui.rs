@@ -12,6 +12,8 @@ mod icons;
 mod style;
 use icons::{Icon, IconButton};
 use style::Palette;
+mod agents;
+use agents::Agent;
 
 #[derive(Default)]
 pub struct Shroom {
@@ -34,6 +36,8 @@ struct Navigation {
     sidebar: bool,
     actions: bool,
     format: ExportFormat,
+    agent: Agent,
+    show_agents: bool,
     inspect: bool,
     diagnostics: bool,
 }
@@ -46,6 +50,8 @@ impl Default for Navigation {
             sidebar: false,
             actions: false,
             format: ExportFormat::Command,
+            agent: Agent::default(),
+            show_agents: false,
             inspect: false,
             diagnostics: false,
         }
@@ -85,11 +91,23 @@ impl App for Shroom {
         let setup = use_state(SetupForm::default);
         let create = use_state(CreateForm::default);
         let archive = use_state(|| std::env::var("SHROOM_IMAGE_ARCHIVE").unwrap_or_default());
+        let updates = self.backend.agents.subscribe();
+        let mut web_sessions = use_state(|| updates.borrow().clone());
+        use_future(move || {
+            let mut updates = updates.clone();
+            async move {
+                web_sessions.set(updates.borrow_and_update().clone());
+                while updates.changed().await.is_ok() {
+                    web_sessions.set(updates.borrow_and_update().clone());
+                }
+            }
+        });
         let ui = Ui {
             model,
             navigation,
             backend: self.backend.clone(),
             colors,
+            web_sessions,
         };
         let view = model.read().clone();
         let nav = navigation.read().clone();
@@ -100,7 +118,7 @@ impl App for Shroom {
             .color(colors.text).font_size(14.)
             .maybe_child((!compact || nav.sidebar).then(|| ui.sidebar(&view, &nav)))
             .child(
-                rect().width(Size::flex(1.)).height(Size::fill()).content(Content::Flex)
+                rect().key("workspace-column").width(Size::flex(1.)).height(Size::fill()).content(Content::Flex)
                     .child(ui.toolbar(&view, &nav, compact))
                     .child(colors.divider())
                     .maybe_child(view.pending.as_ref().map(|command| {
@@ -108,7 +126,7 @@ impl App for Shroom {
                             .child(label().text(command.progress()).font_size(13.).color(colors.green))
                     }))
                     .child(
-                        rect().horizontal().width(Size::fill()).height(Size::flex(1.)).content(Content::Flex)
+                        rect().key("workspace-area").horizontal().width(Size::fill()).height(Size::flex(1.)).content(Content::Flex)
                             .child(
                                 rect().width(Size::flex(1.)).height(Size::fill()).content(Content::Flex)
                                     .child(
@@ -122,7 +140,7 @@ impl App for Shroom {
                                                             .child(colors.caption("Refresh before changing a workspace."))
                                                             .child(colors.primary(ui.command_icon("Refresh now", Icon::Refresh, Command::Refresh, view.pending.is_none())))
                                                     }))
-                                                    .child(if !view.connected() {
+                                                    .child(rect().key("active-page").width(Size::fill()).child(if !view.connected() {
                                                         ui.setup(setup, view.pending.is_none()).into_element()
                                                     } else {
                                                         match nav.page {
@@ -130,7 +148,7 @@ impl App for Shroom {
                                                             Page::Environment => ui.environment(&view, archive).into_element(),
                                                             Page::Workspace => ui.workspace(&view, &nav).into_element(),
                                                         }
-                                                    })
+                                                    }))
                                                     .maybe_child(view.notice.as_ref().map(|notice| {
                                                         label().text(notice.clone()).font_size(13.).color(colors.green)
                                                     }))
@@ -140,7 +158,11 @@ impl App for Shroom {
                                             ),
                                     )
                                     .child(rect().width(Size::fill()).padding((14., 24.))
-                                        .child(colors.caption("Your workspaces keep running when you close Shroom."))),
+                                        .child(colors.caption(if web_sessions.read().is_empty() {
+                                            "Your workspaces keep running when you close Shroom."
+                                        } else {
+                                            "Web connections close with Shroom; workspaces keep running."
+                                        }))),
                             )
                             .maybe_child(docked_details.then(|| {
                                 rect().width(Size::px(236.)).height(Size::fill())
@@ -159,6 +181,17 @@ struct Ui {
     navigation: State<Navigation>,
     backend: Arc<Backend>,
     colors: Palette,
+    web_sessions: State<Vec<crate::agents::WebSession>>,
+}
+
+impl PartialEq for Ui {
+    fn eq(&self, other: &Self) -> bool {
+        self.model == other.model
+            && self.navigation == other.navigation
+            && self.colors == other.colors
+            && self.web_sessions == other.web_sessions
+            && Arc::ptr_eq(&self.backend, &other.backend)
+    }
 }
 
 impl Ui {
@@ -845,9 +878,20 @@ impl Ui {
                         .child(rect().width(Size::flex(1.)).child(Icon::Terminal.beside(label().text("Connect").font_weight(FontWeight::MEDIUM))))
                         .children([ExportFormat::Command, ExportFormat::Config].into_iter().map(|format| {
                             p.button(format.label(), view.pending.is_none()).flat()
-                                .background(if nav.format == format { p.selected } else { p.background })
-                                .on_press(move |_| navigation.write().format = format).into_element()
-                        })))
+                                .background(if !nav.show_agents && nav.format == format { p.selected } else { p.background })
+                                .on_press(move |_| {
+                                    let mut nav = navigation.write();
+                                    nav.format = format;
+                                    nav.show_agents = false;
+                                }).into_element()
+                        }))
+                        .child(p.button("Agents", true).flat()
+                            .background(if nav.show_agents { p.selected } else { p.background })
+                            .on_press(move |_| navigation.write().show_agents = true)))
+                    .child(if nav.show_agents {
+                        self.agent_panel(view, nav, workspace).into_element()
+                    } else {
+                        rect().width(Size::fill()).spacing(14.)
                     .child(
                         ScrollView::new().width(Size::fill()).height(Size::px(170.))
                             .child(rect().width(Size::fill()).padding(10.).background(p.surface)
@@ -860,8 +904,10 @@ impl Ui {
                     .child(p.caption(match nav.format {
                         ExportFormat::Command => "Identity and pinned host verification included.",
                         ExportFormat::Config => "Place this stanza before matching Host defaults.",
+                        ExportFormat::ConnectionDetails => "Verify the host key in the client before connecting.",
                     }))
-                    .child(if verified { p.primary(copy) } else { copy }),
+                    .child(if verified { p.primary(copy) } else { copy }).into_element()
+                    }),
             )
             .child(if verified { verify.flat() } else { p.primary(verify) })
     }

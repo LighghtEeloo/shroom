@@ -3,6 +3,45 @@ use crate::test_support::Fixture as Data;
 
 struct Fixture;
 
+#[test]
+fn web_forms_reject_external_urls_and_invalid_ports_without_exposing_tokens() {
+    for url in [
+        "http://127.0.0.1:5495/path?token=secret#login",
+        "http://localhost:3080/",
+        "http://[::1]:8080/",
+    ] {
+        let forward = WebForward::parse(url, "3081").unwrap();
+        assert_eq!(forward.local_port.get(), 3081);
+        assert!(!format!("{forward:?}").contains("secret"));
+    }
+    for url in [
+        "http://example.com:5494",
+        "https://localhost:5494",
+        "http://localhost",
+        "http://user@localhost:5494",
+        "http://127.0.0.1:5494/\n",
+    ] {
+        assert!(matches!(
+            WebForward::parse(url, "3081"),
+            Err(Error::Integration(
+                shroom_integrations::Error::InvalidWebUrl
+            ))
+        ));
+    }
+    for port in ["abc", "-1", "1023", "65536"] {
+        assert!(WebForward::parse("http://127.0.0.1:5494/", port).is_err());
+    }
+    let export = ConnectionExport::with_connection(
+        &"project".parse().unwrap(),
+        Data::connection("project"),
+        ExportFormat::ConnectionDetails,
+    )
+    .unwrap();
+    assert!(export.text.contains("Port: 2222"));
+    assert!(export.text.contains("Public host key: ssh-ed25519 "));
+    assert!(export.text.contains("Project directory: /workspace"));
+}
+
 impl Fixture {
     fn workspace(name: &str, state: SandboxStatus) -> Workspace {
         Data::workspace(name, state)
@@ -394,6 +433,11 @@ async fn disconnected_requests_fail_without_acquiring_a_core() {
     assert!(matches!(reply.outcome, Err(Error::Disconnected)));
     assert!(reply.session.is_none());
     assert!(reply.catalog.unwrap().workspaces.is_empty());
+    let reply = backend
+        .execute(Command::AddToCodex("alpha".parse().unwrap()))
+        .await;
+    assert!(matches!(reply.outcome, Err(Error::Disconnected)));
+    assert!(reply.session.is_none());
     let reply = backend.execute(Command::Disconnect).await;
     assert!(reply.outcome.is_ok());
     assert!(reply.session.is_none());

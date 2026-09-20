@@ -1,9 +1,36 @@
 # Desktop App Validation — 2026-09-20
 
-The redesigned Freya app passed its 24 ordinary tests on macOS ARM64, along with the full workspace tests,
+The Freya app passed its 40 ordinary tests on macOS ARM64, along with the full workspace tests,
 Clippy with `-D warnings`, formatting, and a native executable build. Headless Freya renders were inspected
 for setup, running workspaces in light and dark appearances, compact navigation at 820 × 640, creation,
 environment settings, stopped workspaces, and incomplete-setup recovery.
+
+## Agent Integration UI
+
+The six-agent picker, native configuration and direct-field routes, web port validation, live process updates,
+and conditional browser actions pass headless Freya tests. Agent views were rendered in light and dark
+appearances and at the 820 × 640 minimum size. A regression test keeps entered web form values after errors;
+stable container keys also preserve the component across progress and error insertion.
+
+Codex's existing primary action now dispatches SSH project registration. Its reused button is visible before
+the connection details at the minimum window size; the manual **SSH config** tab remains available.
+Registration, file preservation, rejection cases, and the inspected desktop route are recorded in the
+[Codex handoff evaluation](../2026-09-20-agent-integrations/README.md#codex-project-handoff).
+
+The managed web acceptance test passed in 3.83 seconds with the pinned runtime and prepared guest image.
+Fixture `kimi` and `dsh` executables validated the actual launch arguments and served HTTP from a different
+guest port than requested. The app forwarded the reported port, preserved a token-bearing path/query/fragment,
+received HTTP responses, rejected duplicate launches and an occupied host port, and successfully retried.
+Closing a connection released its listener. Workspace stop and directory disconnect closed remaining local
+processes; starting a stopped workspace allowed a fresh launch. The test removed its workspace and state root.
+
+The first run exposed Tokio's `Child::wait` closing the tunnel's stdin pipe and ending its keepalive command.
+The supervisor now owns that pipe separately. A retained process test verifies the tunnel stays alive after
+its readiness marker. The failed run's disposable sandbox was stopped, removed, and its test directory deleted.
+Output tests cover final stderr from fast failures, bounded Unicode text, terminal-control stripping, and
+rejection of stale process updates after replacement. These tests use fixture agents; authenticated sessions
+in the actual products remain the [integration evaluation's](../2026-09-20-agent-integrations/README.md#source-review-and-remaining-compatibility-checks)
+compatibility work.
 
 ## Workspace Shell Redesign
 

@@ -8,6 +8,7 @@ case "${1:-}" in
         test ! -e /etc/ssh/ssh_host_ed25519_key
         test ! -e /etc/ssh/ssh_host_ed25519_key.pub
         test ! -e /etc/shroom/authorized_keys
+        test ! -e /etc/sudoers.d/shroom-workspace
         user=${2:?guest username is required}
         case "$user" in
             ''|root|[!a-z]*|*[!a-z0-9_-]*) echo 'invalid guest username' >&2; exit 2 ;;
@@ -15,6 +16,10 @@ case "${1:-}" in
         test "${#user}" -le 32
         test "$(id -u developer)" = 1000
         test "$(id -g developer)" = 1000
+        if ! command -v sudo >/dev/null || test ! -x /usr/sbin/visudo; then
+            echo 'workspace image is missing sudo; rebuild and reimport it' >&2
+            exit 2
+        fi
         if [ "$user" != developer ]; then
             if getent passwd "$user" >/dev/null || getent group "$user" >/dev/null; then
                 echo 'guest username already exists in the image' >&2
@@ -23,6 +28,10 @@ case "${1:-}" in
             usermod --login "$user" --home "/home/$user" --move-home developer
             groupmod --new-name "$user" developer
         fi
+        printf '%s ALL=(ALL:ALL) NOPASSWD: ALL\n' "$user" > /etc/sudoers.d/shroom-workspace
+        chown root:root /etc/sudoers.d/shroom-workspace
+        chmod 0440 /etc/sudoers.d/shroom-workspace
+        /usr/sbin/visudo -c
         sed -i "s/^AllowUsers .*/AllowUsers $user/" /etc/ssh/sshd_config
         IFS= read -r client_key
         printf '%s\n' "$client_key" > /etc/shroom/authorized_keys

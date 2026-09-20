@@ -67,6 +67,9 @@ MSB_CONFIG_PATH="$HOME/.shroom/microsandbox/config.json" \
 Import the image before opening a core at the same state root. Shroom uses the fixed local image tag
 with the SDK's `Never` pull policy. In the desktop app, **Import image** performs this import into the open
 state directory; the CLI import above is an alternative. Runtime and image installation remain explicit setup steps.
+After changing the image recipe, rebuild and reimport it before creating workspaces.
+Existing workspace disks retain their installed packages and configuration; updating the imported image does
+not upgrade them. Recreate those workspaces or explicitly repair them through SDK root administration.
 Choose a short state path because the SDK derives Unix socket paths from it. Paths must be UTF-8
 without control characters or `$`; spaces and literal percent characters are supported.
 

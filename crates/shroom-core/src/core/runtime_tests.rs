@@ -86,6 +86,29 @@ impl Fixture {
         .await;
     }
 
+    async fn assert_sudo(connection: &crate::SshConnection) {
+        let output = Self::ssh(
+            connection,
+            "id -u; sudo -k -n id -u && sudo -k -n /usr/sbin/visudo -c >/dev/null && stat -c '%u:%g:%a' /etc/sudoers.d/shroom-workspace",
+        )
+        .await;
+        assert!(output.status.success(), "{:?}", output.stderr);
+        assert_eq!(output.stdout, b"1000\n0\n0:0:440\n");
+        let denied = Self::ssh(
+            connection,
+            "printf forbidden >> /etc/sudoers.d/shroom-workspace",
+        )
+        .await;
+        assert!(!denied.status.success());
+        assert!(String::from_utf8_lossy(&denied.stderr).contains("Permission denied"));
+        assert_eq!(
+            Self::ssh(connection, "sudo -k -n cat /etc/sudoers.d/shroom-workspace")
+                .await
+                .stdout,
+            format!("{} ALL=(ALL:ALL) NOPASSWD: ALL\n", connection.user).as_bytes()
+        );
+    }
+
     async fn sftp(connection: &crate::SshConnection, batch: String) -> std::process::Output {
         let mut child = Command::new("sftp")
             .args([
@@ -222,6 +245,7 @@ async fn runtime_contract() {
     let a = core.get(&alpha).await.unwrap().ssh.unwrap();
     a.probe().await.unwrap();
     assert_eq!(Fixture::ssh(&a, "id -un").await.stdout, b"developer\n");
+    Fixture::assert_sudo(&a).await;
     let original_key = fs::read(&a.identity_file).unwrap();
     let original_pin = fs::read(&a.known_hosts_file).unwrap();
     assert!(matches!(
@@ -501,6 +525,7 @@ async fn runtime_contract() {
     )
     .unwrap();
     let restarted = core.start(&alpha).await.unwrap().ssh.unwrap();
+    Fixture::assert_sudo(&restarted).await;
     assert_eq!(restarted.host_key, a.host_key);
     assert_eq!(fs::read(&restarted.identity_file).unwrap(), original_key);
     assert_eq!(
@@ -670,6 +695,7 @@ async fn custom_account_and_shared_folders_persist_without_modifying_readonly_ho
     let ssh = created.ssh.unwrap();
     assert_eq!(ssh.user, "arctic");
     assert_eq!(ssh.directory, "/home/arctic/workspace");
+    Fixture::assert_sudo(&ssh).await;
     assert_eq!(
         Fixture::ssh(
             &ssh,
@@ -695,15 +721,20 @@ async fn custom_account_and_shared_folders_persist_without_modifying_readonly_ho
             .stdout,
         b"unchanged"
     );
-    let rejected = Fixture::ssh(&ssh, "printf changed > /mnt/reference/sentinel").await;
-    assert!(!rejected.status.success());
-    assert!(
-        String::from_utf8_lossy(&rejected.stderr)
-            .to_lowercase()
-            .contains("read-only"),
-        "{:?}",
-        rejected.stderr
-    );
+    for command in [
+        "printf changed > /mnt/reference/sentinel",
+        "sudo -k -n sh -c 'printf changed > /mnt/reference/sentinel'",
+    ] {
+        let rejected = Fixture::ssh(&ssh, command).await;
+        assert!(!rejected.status.success());
+        assert!(
+            String::from_utf8_lossy(&rejected.stderr)
+                .to_lowercase()
+                .contains("read-only"),
+            "{:?}",
+            rejected.stderr
+        );
+    }
     assert_eq!(
         fs::read_to_string(readonly.join("sentinel")).unwrap(),
         "unchanged"
@@ -727,6 +758,7 @@ async fn custom_account_and_shared_folders_persist_without_modifying_readonly_ho
     fs::rename(&moved, &host).unwrap();
     fs::write(host.join("from-host"), "after-restart").unwrap();
     let restarted = core.start(&name).await.unwrap().ssh.unwrap();
+    Fixture::assert_sudo(&restarted).await;
     assert_eq!(restarted.user, "arctic");
     assert_eq!(restarted.host_key, ssh.host_key);
     assert_eq!(
@@ -769,7 +801,36 @@ async fn custom_account_and_shared_folders_persist_without_modifying_readonly_ho
     assert!(
         matches!(Fixture::leaf(&error), Error::GuestHelperFailed { code: 2, diagnostic } if diagnostic.contains("guest username already exists"))
     );
-    Fixture::admin(&core, &collision, "test \"$(id -u developer)\" = 1000 && test ! -e /etc/shroom/authorized_keys && test ! -e /etc/ssh/ssh_host_ed25519_key").await;
+    Fixture::admin(&core, &collision, "test \"$(id -u developer)\" = 1000 && test ! -e /etc/shroom/authorized_keys && test ! -e /etc/ssh/ssh_host_ed25519_key && test ! -e /etc/sudoers.d/shroom-workspace").await;
+    // The collision leaves an unprovisioned guest for exercising outdated-image rejection.
+    for binary in ["/usr/bin/sudo", "/usr/sbin/visudo"] {
+        Fixture::admin(&core, &collision, &format!("mv {binary} {binary}.disabled")).await;
+        core.scoped(async {
+            let sandbox = Sandbox::get(collision.as_str())
+                .await
+                .unwrap()
+                .connect()
+                .await
+                .unwrap();
+            let output = sandbox
+                .exec_with("/bin/sh", |exec| {
+                    exec.args([GUEST_HELPER, "provision", "arctic"])
+                        .user("root")
+                        .cwd("/")
+                        .stdin_null()
+                        .timeout(Duration::from_secs(10))
+                })
+                .await
+                .unwrap();
+            assert_eq!(output.status().code, 2);
+            assert_eq!(
+                output.stderr().unwrap().trim(),
+                "workspace image is missing sudo; rebuild and reimport it"
+            );
+        })
+        .await;
+        Fixture::admin(&core, &collision, &format!("mv {binary}.disabled {binary}; test \"$(id -u developer)\" = 1000 && ! getent passwd arctic && test ! -e /etc/shroom/authorized_keys && test ! -e /etc/ssh/ssh_host_ed25519_key && test ! -e /etc/sudoers.d/shroom-workspace")).await;
+    }
     core.stop(&collision).await.unwrap();
     core.remove(&collision).await.unwrap();
     drop(core);

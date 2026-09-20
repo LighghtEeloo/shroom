@@ -15,6 +15,8 @@ reproducible evidence and platform validation limits, and ideas describe the bro
 - [Core validation](evaluations/2026-09-20-minimal-core/README.md): runtime acceptance and reproduction commands.
 - [Creation options validation](evaluations/2026-09-20-creation-options/README.md): custom guest accounts,
   shared host folders, restart persistence, and rejection cases.
+- [Guest sudo validation](evaluations/2026-09-20-guest-sudo/README.md): passwordless elevation,
+  restart persistence, outdated-image rejection, and read-only host folder checks.
 - [Desktop app validation](evaluations/2026-09-20-desktop-app/README.md): Freya UI checks and real-runtime
   missing-image recovery, import, and workspace lifecycle validation.
 - [Lume HTTP validation](evaluations/2026-09-20-lume-http/README.md): source review, HTTP tests, and routing regression evidence.

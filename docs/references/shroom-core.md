@@ -209,11 +209,13 @@ Build one Debian-based OCI image recipe with the guest account, tools, and OpenS
 Use 2 vCPUs and 4 GiB of memory, with no automatic idle expiry.
 The SDK supplies guest administration; Shroom adds no guest agent or custom command protocol.
 
-The guest includes OpenSSH, Bash, Git, CA certificates, and basic download/archive utilities.
+The guest includes OpenSSH, sudo, Bash, Git, CA certificates, and basic download/archive utilities.
 The account defaults to `developer`; callers may choose a different login name at creation.
 `GuestUser` accepts 1–32 lowercase ASCII letters, digits, underscores, or hyphens, starting with a letter,
 and rejects `root`. Provisioning rejects names already used by another image account or group.
-The account retains UID/GID 1000 and has a writable home and `/home/<user>/workspace`, with no sudo grant.
+The account retains UID/GID 1000 and has a writable home and `/home/<user>/workspace`.
+Grant passwordless sudo for all commands and run-as users so workspace users and agents can install packages
+and configure the guest. The VM is the isolation boundary; guest root-owned files are modifiable through sudo.
 Store an optional username override in the SDK's `shroom.user` label; absence means the default account.
 OpenSSH accepts only public-key login for that account and supports shells, SFTP, and local forwarding.
 Disable root/password/keyboard-interactive login, SSH-agent forwarding, and X11 forwarding.
@@ -221,8 +223,10 @@ Keep the authorized public key and service configuration root-owned outside the 
 
 Remove image-build host keys and default image credentials.
 The core embeds the checked-in SSH helper and installs it through SDK filesystem access during creation.
-First-time provisioning renames the image's account and home when requested, selects it in `AllowUsers`,
-installs the public client key, generates the host key, and launches SSH.
+First-time provisioning requires sudo in the image, renames the image's account and home when requested,
+and writes the selected account's grant to root-owned `/etc/sudoers.d/shroom-workspace` with mode `0440`.
+Validate the complete sudoers configuration with `visudo` before selecting the account in `AllowUsers`,
+installing the public client key, generating the host key, and launching SSH.
 Later boots require those keys to exist; they never invoke a key-regeneration fallback.
 SDK administration starts at `/`, which exists before the selected account's home is provisioned.
 
@@ -333,7 +337,7 @@ Do not build a mock hypervisor framework.
 | Input and ownership | Valid name/port; one core per root | Invalid names/ports or a second core; existing state unchanged |
 | Creation | Fresh name, unique guest host key, usable SSH | Duplicate name preserves the original; the image supplies no shared host key |
 | Access | Workspace A's key enters A as developer | A's key cannot enter B; root and password login fail |
-| Guest permissions | Shell and SFTP write in the developer home | Both fail to write a root-owned test file |
+| Guest permissions | Shell and SFTP write in the guest home; default and custom users run `sudo -n` as root before and after restart | Unprivileged shell/SFTP writes to root-owned files fail; an account-name collision installs no sudo grant |
 | Persistence | Files, installed executable, and host key survive stop/start | Missing workspace or access material is not recreated |
 | Endpoint refresh | Changed endpoint with the original host key connects | Stale endpoint reaching another VM fails; stored trust stays unchanged |
 | Address discovery | Running VM eventually returns its current endpoint | Stopped VM has no endpoint; bounded discovery failure does not hang |

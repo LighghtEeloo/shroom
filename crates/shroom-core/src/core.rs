@@ -16,8 +16,8 @@ use microsandbox::{
 use tokio::time;
 
 use crate::{
-    Config, Error, HostPort, HostPublicKey, MicrosandboxError, RUNTIME_VERSION, Result,
-    SandboxStatus, Stage, WORKSPACE_IMAGE, Workspace, WorkspaceName,
+    Config, Error, FolderAccess, HostPort, HostPublicKey, MicrosandboxError, RUNTIME_VERSION,
+    Result, SandboxStatus, Stage, WORKSPACE_IMAGE, Workspace, WorkspaceName, WorkspaceOptions,
     access::{Access, GUEST_HELPER, GUEST_HOST_KEY, Helper, Material},
 };
 
@@ -100,6 +100,7 @@ impl Core {
         &mut self,
         name: WorkspaceName,
         host_ssh_port: HostPort,
+        options: WorkspaceOptions,
     ) -> Result<Workspace> {
         let access = self.access(&name);
         self.scoped(async {
@@ -124,7 +125,10 @@ impl Core {
             self.check_port(host_ssh_port)
                 .await
                 .map_err(|e| Stage::Validate.context(&name, e))?;
-            let config = Self::sandbox_config(&name, host_ssh_port)
+            options
+                .validate_sources(self.access_dir.parent().expect("state directory"))
+                .map_err(|e| Stage::Validate.context(&name, e))?;
+            let config = Self::sandbox_config(&name, host_ssh_port, &options)
                 .await
                 .map_err(|e| Stage::Validate.context(&name, e))?;
             let client = access
@@ -138,7 +142,7 @@ impl Core {
             let public = client
                 .to_openssh()
                 .map_err(|e| Stage::Provision.context(&name, e))?;
-            Self::launch_ssh(&sandbox, Some(public))
+            Self::launch_ssh(&sandbox, Some((public, &options)))
                 .await
                 .map_err(|e| Stage::Provision.context(&name, e))?;
             let host_key =
@@ -198,12 +202,13 @@ impl Core {
                     Stage::ReadAccess
                         .context(name, Error::AccessIncomplete(access.directory.clone()))
                 })?;
-            Self::validate_config(
-                &handle
-                    .config()
-                    .map_err(|e| Stage::Validate.context(name, e))?,
-            )
-            .map_err(|e| Stage::Validate.context(name, e))?;
+            let config = handle
+                .config()
+                .map_err(|e| Stage::Validate.context(name, e))?;
+            Self::validate_config(&config).map_err(|e| Stage::Validate.context(name, e))?;
+            WorkspaceOptions::from_config(&config)?
+                .validate_sources(self.access_dir.parent().expect("state directory"))
+                .map_err(|e| Stage::Validate.context(name, e))?;
             let newly_booted = handle.status_snapshot() != SandboxStatus::Running;
             let sandbox = time::timeout(BOOT_TIMEOUT, handle.connect_or_start_detached())
                 .await
@@ -297,6 +302,7 @@ impl Core {
 
     fn workspace(&self, handle: &SandboxHandle) -> Result<Workspace> {
         let name: WorkspaceName = handle.name().parse()?;
+        let options = WorkspaceOptions::from_config(&handle.config()?)?;
         let access = self.access(&name);
         let material = access
             .read()
@@ -305,10 +311,11 @@ impl Core {
             Self::endpoint(handle).map_err(|e| Stage::DiscoverEndpoint.context(&name, e))?;
         let ssh = material
             .zip(endpoint)
-            .map(|(material, endpoint)| access.connection(material, endpoint));
+            .map(|(material, endpoint)| access.connection(material, endpoint, &options.user));
         Ok(Workspace {
             name,
             state: handle.status_snapshot(),
+            options,
             ssh,
         })
     }
@@ -360,24 +367,45 @@ impl Core {
         .await
         .map_err(|e| Stage::DiscoverEndpoint.context(name, e))?
         .map_err(|e| Stage::DiscoverEndpoint.context(name, e))?;
-        let ssh = access.connection(material, endpoint);
+        let options = WorkspaceOptions::from_config(&handle.config()?)?;
+        let ssh = access.connection(material, endpoint, &options.user);
         ssh.probe()
             .await
             .map_err(|e| Stage::Probe.context(name, e))?;
         Ok(Workspace {
             name: name.clone(),
             state: SandboxStatus::Running,
+            options,
             ssh: Some(ssh),
         })
     }
 
-    async fn launch_ssh(sandbox: &Sandbox, public: Option<String>) -> Result<()> {
+    async fn launch_ssh(
+        sandbox: &Sandbox,
+        provision: Option<(String, &WorkspaceOptions)>,
+    ) -> Result<()> {
+        if provision.is_some() {
+            time::timeout(
+                ADMIN_TIMEOUT,
+                sandbox.fs().write(
+                    GUEST_HELPER,
+                    include_bytes!("../../../images/workspace/shroom-ssh"),
+                ),
+            )
+            .await??;
+        }
         let output = time::timeout(
             ADMIN_TIMEOUT,
-            sandbox.exec_with(GUEST_HELPER, |exec| {
-                let exec = exec.user("root").timeout(Duration::from_secs(10));
-                match public {
-                    Some(public) => exec.arg("provision").stdin_bytes(format!("{public}\n")),
+            sandbox.exec_with("/bin/sh", |exec| {
+                let exec = exec
+                    .arg(GUEST_HELPER)
+                    .user("root")
+                    .cwd("/")
+                    .timeout(Duration::from_secs(10));
+                match provision {
+                    Some((public, options)) => exec
+                        .args(["provision", options.user.as_str()])
+                        .stdin_bytes(format!("{public}\n")),
                     None => exec.arg("start").stdin_null(),
                 }
             }),
@@ -396,8 +424,13 @@ impl Core {
         NetworkPolicy::from_profiles([NetworkProfile::Public])
     }
 
-    async fn sandbox_config(name: &WorkspaceName, port: HostPort) -> Result<SandboxConfig> {
-        let config = Sandbox::builder(name.as_str())
+    async fn sandbox_config(
+        name: &WorkspaceName,
+        port: HostPort,
+        options: &WorkspaceOptions,
+    ) -> Result<SandboxConfig> {
+        options.validate()?;
+        let builder = Sandbox::builder(name.as_str())
             .image(WORKSPACE_IMAGE)
             .pull_policy(PullPolicy::Never)
             .cpus(2)
@@ -405,16 +438,36 @@ impl Core {
             .root_disk(4096_u32)
             .shell("/bin/bash")
             .user("root")
-            .workdir("/home/developer/workspace")
+            // The account's home is created during provisioning; administration boots at /.
+            .workdir("/")
+            .label(WorkspaceOptions::USER_LABEL, options.user.as_str())
             .network(|network| network.policy(Self::network_policy()))
-            .port_bind(Ipv4Addr::LOCALHOST.into(), port.get(), 22)
+            .port_bind(Ipv4Addr::LOCALHOST.into(), port.get(), 22);
+        let config = options
+            .folders
+            .iter()
+            .fold(builder, |builder, folder| {
+                builder.volume(folder.guest(), |mount| {
+                    let mount = mount.bind(folder.host()).owner(1000, 1000).nosuid().nodev();
+                    match folder.access() {
+                        FolderAccess::ReadOnly => mount.readonly(),
+                        FolderAccess::ReadWrite => mount,
+                    }
+                })
+            })
             .build()
             .await?;
         Self::validate_config(&config)?;
+        if !WorkspaceOptions::from_config(&config)?.matches(options) {
+            return Err(Error::InvalidHostFolder(
+                "effective SDK configuration changed the selected account or folders",
+            ));
+        }
         Ok(config)
     }
 
     fn validate_config(config: &SandboxConfig) -> Result<()> {
+        WorkspaceOptions::from_config(config)?;
         let spec = &config.spec;
         let network = &spec.network;
         // The SDK exposes engine and wire policy types separately; compare their wire representation.
@@ -425,7 +478,6 @@ impl Core {
             if image.reference == WORKSPACE_IMAGE
                 && matches!(image.root_disk, None | Some(RootDisk::Managed { .. })));
         if !private_root
-            || !spec.mounts.is_empty()
             || !spec.patches.is_empty()
             || !spec.vsock.is_empty()
             || spec.init.is_some()

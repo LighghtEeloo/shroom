@@ -170,11 +170,15 @@ async fn caller_process() {
         .unwrap();
     let mut core = Core::open(state.into(), Fixture::config()).await.unwrap();
     assert!(
-        core.create("alpha".parse().unwrap(), port.try_into().unwrap())
-            .await
-            .unwrap()
-            .ssh
-            .is_some()
+        core.create(
+            "alpha".parse().unwrap(),
+            port.try_into().unwrap(),
+            Default::default()
+        )
+        .await
+        .unwrap()
+        .ssh
+        .is_some()
     );
 }
 
@@ -225,7 +229,8 @@ async fn runtime_contract() {
             &core
                 .create(
                     alpha.clone(),
-                    u32::from(fixture.port + 1).try_into().unwrap()
+                    u32::from(fixture.port + 1).try_into().unwrap(),
+                    Default::default()
                 )
                 .await
                 .unwrap_err()
@@ -235,7 +240,11 @@ async fn runtime_contract() {
     assert!(matches!(
         Fixture::leaf(
             &core
-                .create(beta.clone(), u32::from(fixture.port).try_into().unwrap())
+                .create(
+                    beta.clone(),
+                    u32::from(fixture.port).try_into().unwrap(),
+                    Default::default()
+                )
                 .await
                 .unwrap_err()
         ),
@@ -251,6 +260,7 @@ async fn runtime_contract() {
         .create(
             occupied_name.clone(),
             u32::from(fixture.port + 3).try_into().unwrap(),
+            Default::default(),
         )
         .await
         .unwrap_err();
@@ -280,6 +290,7 @@ async fn runtime_contract() {
         .create(
             beta.clone(),
             u32::from(fixture.port + 1).try_into().unwrap(),
+            Default::default(),
         )
         .await
         .unwrap()
@@ -460,7 +471,11 @@ async fn runtime_contract() {
     assert!(matches!(
         Fixture::leaf(
             &core
-                .create(partial.clone(), u32::from(fixture.port).try_into().unwrap())
+                .create(
+                    partial.clone(),
+                    u32::from(fixture.port).try_into().unwrap(),
+                    Default::default()
+                )
                 .await
                 .unwrap_err()
         ),
@@ -548,6 +563,7 @@ async fn runtime_contract() {
         core.create(
             name.clone(),
             u32::from(fixture.port + 10 + index).try_into().unwrap(),
+            Default::default(),
         )
         .await
         .unwrap();
@@ -578,7 +594,8 @@ async fn runtime_contract() {
             &core
                 .create(
                     partial.clone(),
-                    u32::from(fixture.port + 2).try_into().unwrap()
+                    u32::from(fixture.port + 2).try_into().unwrap(),
+                    Default::default()
                 )
                 .await
                 .unwrap_err()
@@ -596,4 +613,165 @@ async fn runtime_contract() {
     assert!(!fixture.state.join("access/alpha").exists());
     drop(core);
     fs::remove_dir_all(&fixture.directory).unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires the pinned runtime pair, prepared OCI archive, virtualization, and a free port range"]
+async fn custom_account_and_shared_folders_persist_without_modifying_readonly_host_files() {
+    use crate::{FolderAccess, HostFolder, WorkspaceOptions};
+
+    let (fixture, mut core) = Fixture::new().await;
+    let host = fixture.directory.join("shared folder");
+    let readonly = fixture.directory.join("read only");
+    fs::create_dir(&host).unwrap();
+    fs::create_dir(&readonly).unwrap();
+    fs::write(host.join("from-host"), "host-data").unwrap();
+    fs::write(readonly.join("sentinel"), "unchanged").unwrap();
+    let options = WorkspaceOptions {
+        user: "arctic".parse().unwrap(),
+        folders: vec![
+            HostFolder::new(host.clone(), "/mnt/project".into(), FolderAccess::ReadWrite).unwrap(),
+            HostFolder::new(
+                readonly.clone(),
+                "/mnt/reference".into(),
+                FolderAccess::ReadOnly,
+            )
+            .unwrap(),
+        ],
+    };
+    let name: WorkspaceName = "shared".parse().unwrap();
+    let invalid = WorkspaceOptions {
+        folders: vec![options.folders[0].clone(), options.folders[0].clone()],
+        ..options.clone()
+    };
+    let error = core
+        .create(
+            name.clone(),
+            u32::from(fixture.port).try_into().unwrap(),
+            invalid,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        Fixture::leaf(&error),
+        Error::InvalidHostFolder("guest folders must not overlap")
+    ));
+    assert!(core.list().await.unwrap().is_empty());
+    assert!(!core.access(&name).directory.exists());
+    let created = core
+        .create(
+            name.clone(),
+            u32::from(fixture.port).try_into().unwrap(),
+            options.clone(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(created.options, options);
+    let ssh = created.ssh.unwrap();
+    assert_eq!(ssh.user, "arctic");
+    assert_eq!(ssh.directory, "/home/arctic/workspace");
+    assert_eq!(
+        Fixture::ssh(
+            &ssh,
+            "id -un; id -u; printf '%s\\n' \"$HOME\"; cat /mnt/project/from-host"
+        )
+        .await
+        .stdout,
+        b"arctic\n1000\n/home/arctic\nhost-data"
+    );
+    assert!(
+        Fixture::ssh(&ssh, "printf guest-data > /mnt/project/from-guest")
+            .await
+            .status
+            .success()
+    );
+    assert_eq!(
+        fs::read_to_string(host.join("from-guest")).unwrap(),
+        "guest-data"
+    );
+    assert_eq!(
+        Fixture::ssh(&ssh, "cat /mnt/reference/sentinel")
+            .await
+            .stdout,
+        b"unchanged"
+    );
+    let rejected = Fixture::ssh(&ssh, "printf changed > /mnt/reference/sentinel").await;
+    assert!(!rejected.status.success());
+    assert!(
+        String::from_utf8_lossy(&rejected.stderr)
+            .to_lowercase()
+            .contains("read-only"),
+        "{:?}",
+        rejected.stderr
+    );
+    assert_eq!(
+        fs::read_to_string(readonly.join("sentinel")).unwrap(),
+        "unchanged"
+    );
+    let mut old_user = ssh.clone();
+    old_user.user = "developer".into();
+    assert!(!Fixture::ssh(&old_user, "true").await.status.success());
+    core.stop(&name).await.unwrap();
+    drop(core);
+    let mut core = Core::open(fixture.state.clone(), fixture.config.clone())
+        .await
+        .unwrap();
+    assert_eq!(core.get(&name).await.unwrap().options, options);
+    let moved = fixture.directory.join("temporarily moved");
+    fs::rename(&host, &moved).unwrap();
+    assert_eq!(core.get(&name).await.unwrap().options, options);
+    assert!(
+        matches!(Fixture::leaf(&core.start(&name).await.unwrap_err()), Error::Io(e) if e.kind() == std::io::ErrorKind::NotFound)
+    );
+    assert_eq!(core.get(&name).await.unwrap().state, SandboxStatus::Stopped);
+    fs::rename(&moved, &host).unwrap();
+    fs::write(host.join("from-host"), "after-restart").unwrap();
+    let restarted = core.start(&name).await.unwrap().ssh.unwrap();
+    assert_eq!(restarted.user, "arctic");
+    assert_eq!(restarted.host_key, ssh.host_key);
+    assert_eq!(
+        Fixture::ssh(
+            &restarted,
+            "cat /mnt/project/from-host /mnt/project/from-guest"
+        )
+        .await
+        .stdout,
+        b"after-restartguest-data"
+    );
+    assert!(
+        !Fixture::ssh(&restarted, "rm /mnt/reference/sentinel")
+            .await
+            .status
+            .success()
+    );
+    core.stop(&name).await.unwrap();
+    core.remove(&name).await.unwrap();
+    assert_eq!(
+        fs::read_to_string(host.join("from-guest")).unwrap(),
+        "guest-data"
+    );
+    assert_eq!(
+        fs::read_to_string(readonly.join("sentinel")).unwrap(),
+        "unchanged"
+    );
+    let collision: WorkspaceName = "collision".parse().unwrap();
+    let error = core
+        .create(
+            collision.clone(),
+            u32::from(fixture.port).try_into().unwrap(),
+            WorkspaceOptions {
+                user: "daemon".parse().unwrap(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(Fixture::leaf(&error), Error::GuestHelperFailed { code: 2, diagnostic } if diagnostic.contains("guest username already exists"))
+    );
+    Fixture::admin(&core, &collision, "test \"$(id -u developer)\" = 1000 && test ! -e /etc/shroom/authorized_keys && test ! -e /etc/ssh/ssh_host_ed25519_key").await;
+    core.stop(&collision).await.unwrap();
+    core.remove(&collision).await.unwrap();
+    drop(core);
+    fs::remove_dir_all(fixture.directory).unwrap();
 }

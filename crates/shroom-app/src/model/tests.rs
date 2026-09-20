@@ -101,7 +101,7 @@ fn ssh_verification_records_proof_while_discovery_and_copying_do_not() {
     assert!(model.check(&name).is_none());
 
     for command in [
-        Command::Create(name.clone(), 2222.try_into().unwrap()),
+        Command::Create(name.clone(), 2222.try_into().unwrap(), Default::default()),
         Command::Start(name.clone()),
         Command::Verify(name.clone()),
     ] {
@@ -205,18 +205,20 @@ fn create_parses_domain_types_and_rejects_bad_names_and_ports() {
         let command = CreateForm {
             name: "project-1".into(),
             port: port.into(),
+            ..Default::default()
         }
         .parse()
         .unwrap();
         assert!(
-            matches!(command, Command::Create(name, parsed) if name.as_str() == "project-1" && parsed.to_string() == port)
+            matches!(command, Command::Create(name, parsed, _) if name.as_str() == "project-1" && parsed.to_string() == port)
         );
     }
     for name in ["", "Project", "../project", "-project", "two words"] {
         assert!(matches!(
             CreateForm {
                 name: name.into(),
-                port: "2222".into()
+                port: "2222".into(),
+                ..Default::default()
             }
             .parse(),
             Err(Error::Core(shroom_core::Error::InvalidName))
@@ -226,7 +228,8 @@ fn create_parses_domain_types_and_rejects_bad_names_and_ports() {
         assert!(matches!(
             CreateForm {
                 name: "project".into(),
-                port: port.into()
+                port: port.into(),
+                ..Default::default()
             }
             .parse(),
             Err(Error::Core(shroom_core::Error::InvalidPort(_)))
@@ -236,7 +239,8 @@ fn create_parses_domain_types_and_rejects_bad_names_and_ports() {
         assert!(matches!(
             CreateForm {
                 name: "project".into(),
-                port: port.into()
+                port: port.into(),
+                ..Default::default()
             }
             .parse(),
             Err(Error::InvalidPort)
@@ -314,6 +318,7 @@ fn failed_mutation_still_shows_partial_artifacts_and_clears_busy_state() {
     model.begin(&Command::Create(
         "partial".parse().unwrap(),
         2222.try_into().unwrap(),
+        Default::default(),
     ));
     model.apply(Reply {
         session: Data::session(),
@@ -499,7 +504,9 @@ async fn missing_image_recovery_and_workspace_lifecycle() {
         .unwrap()
         .try_into()
         .unwrap();
-    let reply = backend.execute(Command::Create(name.clone(), port)).await;
+    let reply = backend
+        .execute(Command::Create(name.clone(), port, Default::default()))
+        .await;
     assert!(matches!(reply.outcome, Err(Error::ImageMissing)));
     assert!(reply.catalog.unwrap().incomplete.is_empty());
     assert!(!state_dir.join("access/recovery").exists());
@@ -511,7 +518,7 @@ async fn missing_image_recovery_and_workspace_lifecycle() {
             .as_mut()
             .unwrap()
             .core
-            .create(name.clone(), port)
+            .create(name.clone(), port, Default::default())
             .await
             .unwrap_err();
         assert!(matches!(
@@ -543,7 +550,9 @@ async fn missing_image_recovery_and_workspace_lifecycle() {
     reply.outcome.unwrap();
     assert_eq!(reply.image.unwrap(), ImageStatus::Ready);
 
-    let reply = backend.execute(Command::Create(name.clone(), port)).await;
+    let reply = backend
+        .execute(Command::Create(name.clone(), port, Default::default()))
+        .await;
     reply.outcome.unwrap();
     let catalog = reply.catalog.unwrap();
     let connection = catalog.workspaces[0].ssh.clone().unwrap();
@@ -620,4 +629,44 @@ async fn missing_image_recovery_and_workspace_lifecycle() {
     assert!(catalog.incomplete.is_empty());
     backend.execute(Command::Disconnect).await.outcome.unwrap();
     fs::remove_dir_all(state_dir).unwrap();
+}
+
+#[test]
+fn create_carries_custom_user_and_each_folder_access_mode() {
+    let host = tempfile::tempdir().unwrap();
+    let mut form = CreateForm {
+        name: "project".into(),
+        user: "arctic".into(),
+        folders: vec![
+            FolderForm {
+                host: host.path().display().to_string(),
+                guest: "/mnt/source".into(),
+                writable: true,
+            },
+            FolderForm {
+                host: host.path().display().to_string(),
+                guest: "/mnt/reference".into(),
+                writable: false,
+            },
+        ],
+        ..Default::default()
+    };
+    let Command::Create(_, _, options) = form.parse().unwrap() else {
+        panic!("expected create")
+    };
+    assert_eq!(options.user.as_str(), "arctic");
+    assert_eq!(options.folders[0].access(), FolderAccess::ReadWrite);
+    assert_eq!(options.folders[1].access(), FolderAccess::ReadOnly);
+    form.user = "root".into();
+    assert!(matches!(
+        form.parse(),
+        Err(Error::Core(shroom_core::Error::InvalidGuestUser))
+    ));
+    form.user = "arctic".into();
+    form.folders[0].guest = "/etc/ssh".into();
+    assert!(matches!(
+        form.parse(),
+        Err(Error::Core(shroom_core::Error::InvalidHostFolder(_)))
+    ));
+    assert_eq!(std::fs::read_dir(host.path()).unwrap().count(), 0);
 }

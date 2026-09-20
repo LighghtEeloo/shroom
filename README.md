@@ -71,7 +71,7 @@ Choose a short state path because the SDK derives Unix socket paths from it. Pat
 without control characters or `$`; spaces and literal percent characters are supported.
 
 ```rust
-use shroom_core::{Config, Core};
+use shroom_core::{Config, Core, WorkspaceOptions};
 use std::path::PathBuf;
 
 async fn example() -> shroom_core::Result<()> {
@@ -83,12 +83,31 @@ async fn example() -> shroom_core::Result<()> {
         },
     ).await?;
     let name = "project".parse()?;
-    let workspace = core.create(name, 2222_u32.try_into()?).await?;
+    let workspace = core.create(name, 2222_u32.try_into()?, WorkspaceOptions::default()).await?;
     let connection = workspace.ssh.expect("create authenticated successfully");
     println!("{}@{}", connection.user, connection.endpoint);
     Ok(())
 }
 ```
+
+Creation optionally accepts a guest username and host folders. For example:
+
+```rust
+use shroom_core::{FolderAccess, HostFolder, WorkspaceOptions};
+
+let options = WorkspaceOptions {
+    user: "arctic".parse()?,
+    folders: vec![HostFolder::new(
+        "/absolute/path/to/project".into(),
+        "/mnt/project".into(),
+        FolderAccess::ReadWrite,
+    )?],
+};
+let workspace = core.create(name, 2222_u32.try_into()?, options).await?;
+```
+
+These choices are set at creation and persist across restarts. See the
+[guest profile](docs/references/shroom-core.md#guest-profile) for account and folder constraints.
 
 Pass the returned identity, host key or `known_hosts` file, and `HostKeyAlias` to your SSH client.
 Refresh connection details after each start. The full trust options are defined in the core contract.

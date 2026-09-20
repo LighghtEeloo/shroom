@@ -5,6 +5,7 @@
 
 mod access;
 mod core;
+mod options;
 
 use std::{net::SocketAddr, path::PathBuf, str::FromStr};
 
@@ -13,6 +14,7 @@ use ssh_key::PublicKey;
 
 pub use crate::core::Core;
 pub use microsandbox::{MicrosandboxError, sandbox::SandboxStatus};
+pub use options::{FolderAccess, GuestUser, HostFolder, WorkspaceOptions};
 
 /// The preinstalled runtime version paired with the pinned SDK revision.
 pub const RUNTIME_VERSION: &str = "0.7.2";
@@ -97,6 +99,7 @@ impl HostKeyAlias {
 pub struct Workspace {
     pub name: WorkspaceName,
     pub state: SandboxStatus,
+    pub options: WorkspaceOptions,
     /// Present for a running VM with an endpoint and complete access files.
     /// Only `create` and `start` perform an authenticated readiness probe.
     pub ssh: Option<SshConnection>,
@@ -144,6 +147,12 @@ impl Stage {
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error(
+        "guest username must be 1–32 lowercase letters, digits, underscores or hyphens, start with a letter, and not be root"
+    )]
+    InvalidGuestUser,
+    #[error("{0}")]
+    InvalidHostFolder(&'static str),
     #[error(
         "workspace name must be a 1–48 character lowercase ASCII slug starting with a letter or digit"
     )]

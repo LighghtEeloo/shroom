@@ -264,7 +264,11 @@ async fn managed_web_launch_forward_and_shutdown_with_a_real_guest() {
     assert!(port <= 65531);
     let name: WorkspaceName = "agents".parse().unwrap();
     let Outcome::Verified(connection) = backend
-        .execute(Action::Create(name.clone(), port.try_into().unwrap()))
+        .execute(Action::Create(
+            name.clone(),
+            port.try_into().unwrap(),
+            Default::default(),
+        ))
         .await
         .outcome
         .unwrap()

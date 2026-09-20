@@ -42,6 +42,7 @@ async fn native_profile_rejects_conflicting_settings_before_creation() {
         Core::sandbox_config(
             &"profile".parse().unwrap(),
             HostPort::try_from(2222).unwrap(),
+            &WorkspaceOptions::default(),
         ),
     )
     .await
@@ -97,4 +98,77 @@ async fn unrecognized_runtime_is_rejected_before_catalog_initialization() {
     ));
     assert!(!root.path().join("microsandbox/db").exists());
     StateLock::new(root.path()).unwrap();
+}
+
+#[tokio::test]
+async fn shared_profile_roundtrips_and_rejects_injected_mounts() {
+    use crate::{FolderAccess, HostFolder};
+    use microsandbox::sandbox::VolumeMount;
+
+    let root = tempfile::tempdir().unwrap();
+    let backend = LocalBackend::builder()
+        .home(root.path())
+        .config_path(root.path().join("config.json"))
+        .build_lazy()
+        .unwrap();
+    let options = WorkspaceOptions {
+        user: "arctic".parse().unwrap(),
+        folders: vec![
+            HostFolder::new(
+                root.path().to_owned(),
+                "/mnt/project".into(),
+                FolderAccess::ReadOnly,
+            )
+            .unwrap(),
+        ],
+    };
+    let config = microsandbox::with_backend(
+        Arc::new(backend) as Arc<dyn Backend>,
+        Core::sandbox_config(
+            &"shared".parse().unwrap(),
+            2222.try_into().unwrap(),
+            &options,
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(WorkspaceOptions::from_config(&config).unwrap(), options);
+    for conflict in 0..5 {
+        let mut changed = config.clone();
+        let VolumeMount::Bind {
+            guest,
+            options,
+            follow_root_symlinks,
+            ..
+        } = &mut changed.spec.mounts[0]
+        else {
+            panic!("expected bind mount")
+        };
+        match conflict {
+            0 => *guest = "/etc/ssh".into(),
+            1 => *follow_root_symlinks = true,
+            2 => options.override_uid = Some(0),
+            3 => options.nosuid = false,
+            _ => {
+                changed
+                    .spec
+                    .labels
+                    .insert(WorkspaceOptions::USER_LABEL.into(), "root".into());
+            }
+        }
+        assert!(matches!(
+            Core::validate_config(&changed),
+            Err(Error::InvalidHostFolder(_)) | Err(Error::InvalidGuestUser)
+        ));
+    }
+    // Default options are represented without requiring a user-label override.
+    let mut default = config;
+    default.spec.labels.remove(WorkspaceOptions::USER_LABEL);
+    default.spec.runtime.workdir = Some("/home/developer/workspace".into());
+    default.spec.mounts.clear();
+    assert_eq!(
+        WorkspaceOptions::from_config(&default).unwrap(),
+        WorkspaceOptions::default()
+    );
+    assert!(!root.path().join("sandboxes").exists());
 }

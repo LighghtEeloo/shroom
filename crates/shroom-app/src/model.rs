@@ -2,7 +2,8 @@ use std::{env, fs, path::PathBuf};
 
 use microsandbox::{Image, LocalBackend, MicrosandboxError};
 use shroom_core::{
-    Config, Core, HostPort, SandboxStatus, SshConnection, WORKSPACE_IMAGE, Workspace, WorkspaceName,
+    Config, Core, FolderAccess, HostFolder, HostPort, SandboxStatus, SshConnection,
+    WORKSPACE_IMAGE, Workspace, WorkspaceName, WorkspaceOptions,
 };
 use shroom_integrations::{Attachment, GuestPort, GuestWebUrl, WebApp};
 use tokio::sync::Mutex;
@@ -104,6 +105,15 @@ impl SetupForm {
 pub struct CreateForm {
     pub name: String,
     pub port: String,
+    pub user: String,
+    pub folders: Vec<FolderForm>,
+}
+
+#[derive(Clone, Default)]
+pub struct FolderForm {
+    pub host: String,
+    pub guest: String,
+    pub writable: bool,
 }
 
 impl Default for CreateForm {
@@ -111,15 +121,46 @@ impl Default for CreateForm {
         Self {
             name: String::new(),
             port: "2222".into(),
+            user: "developer".into(),
+            folders: Vec::new(),
         }
     }
 }
 
 impl CreateForm {
+    pub fn add_folder(&mut self) {
+        let guest = (1..)
+            .map(|number| format!("/mnt/shared-{number}"))
+            .find(|guest| self.folders.iter().all(|folder| &folder.guest != guest))
+            .expect("finite folder list");
+        self.folders.push(FolderForm {
+            guest,
+            ..Default::default()
+        });
+    }
+
     pub fn parse(&self) -> Result<Command> {
         let name = self.name.parse()?;
         let port = self.port.parse::<u32>().map_err(|_| Error::InvalidPort)?;
-        Ok(Command::Create(name, port.try_into()?))
+        let options = WorkspaceOptions {
+            user: self.user.parse()?,
+            folders: self
+                .folders
+                .iter()
+                .map(|folder| {
+                    HostFolder::new(
+                        folder.host.clone().into(),
+                        folder.guest.clone(),
+                        if folder.writable {
+                            FolderAccess::ReadWrite
+                        } else {
+                            FolderAccess::ReadOnly
+                        },
+                    )
+                })
+                .collect::<shroom_core::Result<_>>()?,
+        };
+        Ok(Command::Create(name, port.try_into()?, options))
     }
 }
 
@@ -129,7 +170,7 @@ pub enum Command {
     Disconnect,
     Refresh,
     ImportImage(PathBuf),
-    Create(WorkspaceName, HostPort),
+    Create(WorkspaceName, HostPort, WorkspaceOptions),
     Start(WorkspaceName),
     Verify(WorkspaceName),
     Stop(WorkspaceName),
@@ -192,7 +233,7 @@ impl Command {
 
     fn selection(&self) -> Option<WorkspaceName> {
         match self {
-            Self::Create(name, _)
+            Self::Create(name, ..)
             | Self::Start(name)
             | Self::Verify(name)
             | Self::Stop(name)
@@ -207,7 +248,7 @@ impl Command {
 
     pub fn target(&self) -> Option<&WorkspaceName> {
         match self {
-            Self::Create(name, _)
+            Self::Create(name, ..)
             | Self::Start(name)
             | Self::Verify(name)
             | Self::Stop(name)
@@ -267,10 +308,10 @@ impl Command {
                             .await?;
                         session.require_image().await?;
                     }
-                    Self::Create(name, port) => {
+                    Self::Create(name, port, options) => {
                         // Check before Core creates access files, keeping a missing-image retry clean.
                         session.require_image().await?;
-                        let workspace = session.core.create(name, port).await?;
+                        let workspace = session.core.create(name, port, options).await?;
                         return Ok(Outcome::Verified(Box::new(
                             workspace.ssh.ok_or(Error::SshUnavailable)?,
                         )));

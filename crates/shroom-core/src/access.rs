@@ -12,7 +12,9 @@ use std::{
 use ssh_key::{Algorithm, HashAlg, PrivateKey, PublicKey};
 use tokio::{io::AsyncReadExt, process::Command, time};
 
-use crate::{ClientPublicKey, Error, HostKeyAlias, HostPublicKey, Result, SshConnection};
+use crate::{
+    ClientPublicKey, Error, GuestUser, HostKeyAlias, HostPublicKey, Result, SshConnection,
+};
 
 const HELPER_TIMEOUT: Duration = Duration::from_secs(10);
 const FILE_LIMIT: u64 = 16 * 1024;
@@ -209,15 +211,20 @@ impl Access {
         Ok(key)
     }
 
-    pub(crate) fn connection(&self, material: Material, endpoint: SocketAddr) -> SshConnection {
+    pub(crate) fn connection(
+        &self,
+        material: Material,
+        endpoint: SocketAddr,
+        user: &GuestUser,
+    ) -> SshConnection {
         SshConnection {
             endpoint,
-            user: "developer".into(),
+            user: user.to_string(),
             identity_file: self.directory.join("client_ed25519"),
             host_key_alias: material.host_key.alias(),
             host_key: material.host_key,
             known_hosts_file: self.directory.join("known_hosts"),
-            directory: "/home/developer/workspace".into(),
+            directory: user.directory(),
         }
     }
 
@@ -305,7 +312,7 @@ impl SshConnection {
         loop {
             let output =
                 Helper::output(self.command().arg("id -un"), Duration::from_secs(5)).await?;
-            if output.status.success() && output.stdout == b"developer\n" {
+            if output.status.success() && output.stdout == format!("{}\n", self.user).as_bytes() {
                 return Ok(());
             }
             let diagnostic = Helper::diagnostic(&output.stderr);

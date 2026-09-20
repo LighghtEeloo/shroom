@@ -22,8 +22,13 @@ external editor or terminal sessions and has no conversation composer.
 | Details | Directory and private runtime storage, scoped `msb` inspection command, and available SSH connection fields |
 
 One directory is open at a time. Selection survives state changes and failed cleanup when the target still
-exists. **New workspace** opens a dedicated name and host-port form; values survive validation errors and
-navigation within the app session. **Environment** presents directory and runtime paths, image availability,
+exists. **New workspace** opens a form for the name, host port, guest username, and optional shared folders;
+values survive validation errors and navigation within the app session. The username starts as `developer`.
+Each added folder has a host path, guest path, read-only/read-write toggle, and remove button. Folder access starts
+read-only; choosing read/write explains that guest edits and deletions change host files. The form states that
+these choices apply at creation, and Details displays the saved username and folder mappings even when stopped.
+Validation follows the core's [guest profile](shroom-core.md#guest-profile).
+**Environment** presents directory and runtime paths, image availability,
 explicit image import, and **Change directory**.
 
 The app follows the system's light or dark appearance with neutral surfaces, restrained green status text,
@@ -124,7 +129,8 @@ stateDiagram-v2
 ```
 
 An externally paused workspace can be stopped; Shroom has no resume operation. Stopping ends client sessions
-and preserves files. Deleting removes workspace data and access files. After a host reboot the user explicitly
+and preserves files. Deleting removes the guest's private data and access files; mounted host folders remain.
+After a host reboot the user explicitly
 starts a workspace, then obtains fresh [connection details](shroom-core.md#ssh-identity-and-connection-refresh).
 
 | Selected state | Emphasized action |

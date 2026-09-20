@@ -62,7 +62,7 @@ impl Navigation {
     fn reconcile(&mut self, command: &Command, view: &Model, succeeded: bool) {
         let show_workspace = match command {
             Command::Open { .. } => succeeded,
-            Command::Create(name, _) => {
+            Command::Create(name, ..) => {
                 succeeded
                     || view
                         .workspaces
@@ -653,7 +653,7 @@ impl Ui {
             )
     }
 
-    fn create(&self, view: &Model, create: State<CreateForm>) -> Rect {
+    fn create(&self, view: &Model, mut create: State<CreateForm>) -> Rect {
         let p = self.colors;
         let form = create.into_writable();
         let ui = self.clone();
@@ -676,6 +676,27 @@ impl Ui {
                     ))),
             )
             .child(p.caption("Use a lowercase name and an unused local port from 1024 to 65535."))
+            .child(p.field("Guest username", "developer", form.map(|f| &f.user, |f| &mut f.user), view.pending.is_none()))
+            .child(p.caption("Username and shared folders are set at creation and kept across restarts."))
+            .child(rect().width(Size::fill()).spacing(12.)
+                .child(label().text("Shared folders (optional)").font_weight(FontWeight::MEDIUM))
+                .child(p.caption("Choose an existing host folder and a guest path below /mnt, such as /mnt/project."))
+                .children(create.read().folders.iter().enumerate().map(|(index, folder)| {
+                    rect().key(index).width(Size::fill()).spacing(10.)
+                        .child(p.field("Host folder", "/Users/you/project", form.map(move |f| &f.folders[index].host, move |f| &mut f.folders[index].host), view.pending.is_none()))
+                        .child(p.field("Guest folder", "/mnt/project", form.map(move |f| &f.folders[index].guest, move |f| &mut f.folders[index].guest), view.pending.is_none()))
+                        .child(rect().horizontal().spacing(10.)
+                            .child(p.button(if folder.writable { "Read & write" } else { "Read only" }, view.pending.is_none())
+                                .on_press(move |_| {
+                                    let writable = create.peek().folders[index].writable;
+                                    create.write().folders[index].writable = !writable;
+                                }))
+                            .child(p.button("Remove folder", view.pending.is_none()).flat().on_press(move |_| { create.write().folders.remove(index); })))
+                        .maybe_child(folder.writable.then(|| p.caption("Guest edits and deletions also change the host files."))).into_element()
+                }))
+                .child(p.button("Add shared folder", view.pending.is_none()).on_press(move |_| {
+                    create.write().add_folder();
+                })))
             .child(rect().horizontal().spacing(10.)
                 .child(p.primary(p.button_icon("Create workspace", Icon::Plus, enabled).on_press(move |_| ui.clone().submit(create.peek().parse()))))
                 .child(self.page_button("Cancel", Page::Workspace, view.pending.is_none())))
@@ -920,12 +941,12 @@ impl Ui {
             .child(label().text(if incomplete {
                 format!("Remove the incomplete setup for {name}?")
             } else {
-                format!("Permanently remove {name} and all of its files?")
+                format!("Permanently remove {name} and its private guest files?")
             }))
             .child(p.caption(if incomplete {
                 "Remove the leftover access files to reuse this name."
             } else {
-                "This cannot be undone."
+                "This cannot be undone. Shared host folders are kept."
             }))
             .child(
                 rect()
@@ -1079,6 +1100,42 @@ impl Ui {
                 }),
             )
             .maybe_child(nav.inspect.then(|| p.code(session.inspection_command())))
+            .maybe_child(
+                (nav.page == Page::Workspace)
+                    .then(|| {
+                        view.selected
+                            .as_ref()
+                            .and_then(|name| view.workspaces.iter().find(|w| &w.name == name))
+                            .map(|workspace| {
+                                rect()
+                                    .width(Size::fill())
+                                    .spacing(10.)
+                                    .child(p.divider())
+                                    .child(p.value(
+                                        "Guest username",
+                                        workspace.options.user.to_string(),
+                                    ))
+                                    .children(workspace.options.folders.iter().map(|folder| {
+                                        p.value(
+                                            &format!(
+                                                "{} · {}",
+                                                folder.guest(),
+                                                if folder.access()
+                                                    == shroom_core::FolderAccess::ReadOnly
+                                                {
+                                                    "read only"
+                                                } else {
+                                                    "read & write"
+                                                }
+                                            ),
+                                            folder.host().display().to_string(),
+                                        )
+                                        .into_element()
+                                    }))
+                            })
+                    })
+                    .flatten(),
+            )
             .maybe_child(
                 (nav.page == Page::Workspace && view.selected.is_some()).then(|| {
                     rect()

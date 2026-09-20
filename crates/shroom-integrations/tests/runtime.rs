@@ -124,7 +124,11 @@ async fn ssh_export_commands_and_web_forwarding() {
     let (runtime, mut core) = Runtime::new().await;
     let name = "apps".parse().unwrap();
     let workspace = core
-        .create(name, u32::from(runtime.port).try_into().unwrap())
+        .create(
+            name,
+            u32::from(runtime.port).try_into().unwrap(),
+            Default::default(),
+        )
         .await
         .unwrap();
     let name = workspace.name;

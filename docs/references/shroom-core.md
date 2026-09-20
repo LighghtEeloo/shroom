@@ -76,6 +76,7 @@ The public API uses the following signatures.
 pub struct Workspace {
     pub name: WorkspaceName,
     pub state: SandboxStatus,
+    pub options: WorkspaceOptions,
     pub ssh: Option<SshConnection>,
 }
 
@@ -95,6 +96,7 @@ impl Core {
         &mut self,
         name: WorkspaceName,
         host_ssh_port: HostPort,
+        options: WorkspaceOptions,
     ) -> Result<Workspace>;
     pub async fn list(&self) -> Result<Vec<Workspace>>;
     pub async fn get(&self, name: &WorkspaceName) -> Result<Workspace>;
@@ -117,6 +119,12 @@ The first character is a letter or digit; later characters may also be hyphens.
 Its inner string is private so it is safe to use as an access-directory name.
 `HostPublicKey` and `ClientPublicKey` are distinct validated Ed25519 public-key types used at the SSH boundary.
 Native sandbox identity remains the SDK's responsibility.
+
+`WorkspaceOptions` selects a `GuestUser` and a list of `HostFolder` mounts at creation.
+Its default is `developer` with no shared folders. These choices persist in the SDK catalog and are returned
+on `Workspace`, including while stopped. The [guest profile](#guest-profile) defines their constraints.
+The core offers no account rename or mount-edit operation after creation; the pinned SDK's modification API
+does not support changing mounts. A later account rename would require a separate guest and client migration.
 
 | Operation | Shroom contract |
 | --- | --- |
@@ -202,15 +210,36 @@ Use 2 vCPUs and 4 GiB of memory, with no automatic idle expiry.
 The SDK supplies guest administration; Shroom adds no guest agent or custom command protocol.
 
 The guest includes OpenSSH, Bash, Git, CA certificates, and basic download/archive utilities.
-The `developer` account has a writable home and `/home/developer/workspace`, with no sudo grant.
+The account defaults to `developer`; callers may choose a different login name at creation.
+`GuestUser` accepts 1–32 lowercase ASCII letters, digits, underscores, or hyphens, starting with a letter,
+and rejects `root`. Provisioning rejects names already used by another image account or group.
+The account retains UID/GID 1000 and has a writable home and `/home/<user>/workspace`, with no sudo grant.
+Store an optional username override in the SDK's `shroom.user` label; absence means the default account.
 OpenSSH accepts only public-key login for that account and supports shells, SFTP, and local forwarding.
 Disable root/password/keyboard-interactive login, SSH-agent forwarding, and X11 forwarding.
 Keep the authorized public key and service configuration root-owned outside the user's home.
 
 Remove image-build host keys and default image credentials.
-First-time provisioning installs the public client key, generates the host key, and launches the fixed SSH helper.
+The core embeds the checked-in SSH helper and installs it through SDK filesystem access during creation.
+First-time provisioning renames the image's account and home when requested, selects it in `AllowUsers`,
+installs the public client key, generates the host key, and launches SSH.
 Later boots require those keys to exist; they never invoke a key-regeneration fallback.
-No host directories or credentials are shared.
+SDK administration starts at `/`, which exists before the selected account's home is provisioned.
+
+Host folders are optional explicit directory binds, each with a host path, guest path, and `FolderAccess`.
+`HostFolder::new` resolves an existing host directory to its canonical path. Guest destinations must be normalized
+paths below `/mnt`, such as `/mnt/project`; destinations cannot overlap. Keeping mounts outside the account and
+service directories prevents them from covering provisioning files. Reject sources that contain or are inside
+Shroom's state directory. Recheck sources before creation and start; a missing or redirected directory fails
+without creating a replacement. Reading the catalog does not require the source directory to be present.
+
+Read-only access is the default. Read/write access exposes edits and deletions directly to the host.
+Use the SDK's strict stat virtualization with guest owner 1000:1000, private host permission handling,
+`nosuid`, and `nodev`. Keep its default write quota and reject ambient settings that change the selected mounts.
+Workspace removal removes the VM and access artifacts; selected host directories remain host-owned.
+Shroom projects no host credentials automatically. Any files within a selected folder are available according
+to that folder's access mode.
+
 Configure the SDK's networking policy to allow public egress while restricting host/private-network access.
 Publish SSH on host loopback only.
 Validate these settings on the pinned runtime; Shroom implements no packet filtering or port-forwarding service.
@@ -218,8 +247,9 @@ Validate these settings on the pinned runtime; Shroom implements no packet filte
 ### Microsandbox Integration
 
 Use an explicit local SDK backend with both its home and configuration path under `microsandbox/`. Scope calls through
-the SDK's backend facility and preserve machine policy; reject conflicting mounts or credential projection. Keep SDK
-handles within an operation so native identity checks remain effective. The
+the SDK's backend facility and preserve machine policy; reject mounts that differ from the selected folders
+or automatic credential projection. Keep SDK handles within an operation so native identity checks remain effective.
+The
 [local backend source](https://github.com/superradcompany/microsandbox/blob/e9565401dacde7e5c3a8fb935574c785aa1bc8f1/sdk/rust/lib/backend/local/mod.rs)
 explains why setting only the home does not isolate configuration.
 

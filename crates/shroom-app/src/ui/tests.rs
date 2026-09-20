@@ -451,7 +451,7 @@ fn creation_preserves_invalid_input_and_does_not_dispatch_it() {
 #[test]
 fn failed_creation_opens_recovery_only_when_the_requested_artifacts_exist() {
     let name: WorkspaceName = "partial".parse().unwrap();
-    let command = Command::Create(name.clone(), 2222.try_into().unwrap());
+    let command = Command::Create(name.clone(), 2222.try_into().unwrap(), Default::default());
     for (workspaces, incomplete, recovery) in [
         (
             vec![Data::workspace("partial", SandboxStatus::Running)],
@@ -516,7 +516,13 @@ fn remove_requires_confirmation_and_cancel_preserves_the_workspace() {
     assert!(Fixture::label(&runner, "Delete workspace").is_none());
     Fixture::click(&mut runner, "Workspace actions");
     Fixture::click(&mut runner, "Delete workspace");
-    assert!(Fixture::label(&runner, "Permanently remove project and all of its files?").is_some());
+    assert!(
+        Fixture::label(
+            &runner,
+            "Permanently remove project and its private guest files?"
+        )
+        .is_some()
+    );
     Fixture::click(&mut runner, "Cancel");
     assert!(Fixture::label(&runner, "Delete workspace").is_none());
     assert!(Fixture::label(&runner, "Workspaces · 1").is_some());
@@ -741,4 +747,28 @@ fn render_preview() {
     Fixture::click(&mut agents, "Agents");
     Fixture::click(&mut agents, "Kimi");
     Fixture::screenshot(&mut agents, format!("{directory}/agents-ready.png"));
+}
+
+#[test]
+fn creation_can_add_toggle_and_remove_shared_folders() {
+    let mut runner = Fixture::runner(Fixture::workspaces(SandboxStatus::Stopped), (1120., 1200.));
+    Fixture::click(&mut runner, "New workspace");
+    assert!(Fixture::label(&runner, "Guest username").is_some());
+    Fixture::click(&mut runner, "Add shared folder");
+    assert!(Fixture::label(&runner, "Host folder").is_some());
+    assert!(Fixture::paragraph(&runner, "/mnt/shared-1").is_some());
+    Fixture::click(&mut runner, "Read only");
+    assert!(Fixture::label(&runner, "Read & write").is_some());
+    Fixture::click(&mut runner, "Read & write");
+    assert!(Fixture::label(&runner, "Read only").is_some());
+    Fixture::click(&mut runner, "Add shared folder");
+    assert!(Fixture::paragraph(&runner, "/mnt/shared-2").is_some());
+    Fixture::click(&mut runner, "Remove folder");
+    assert!(Fixture::paragraph(&runner, "/mnt/shared-1").is_none());
+    assert!(Fixture::paragraph(&runner, "/mnt/shared-2").is_some());
+    Fixture::click(&mut runner, "Add shared folder");
+    assert!(Fixture::paragraph(&runner, "/mnt/shared-1").is_some());
+    if let Ok(directory) = std::env::var("SHROOM_PREVIEW_DIR") {
+        Fixture::screenshot(&mut runner, format!("{directory}/creation-options.png"));
+    }
 }

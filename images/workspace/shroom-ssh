@@ -8,6 +8,22 @@ case "${1:-}" in
         test ! -e /etc/ssh/ssh_host_ed25519_key
         test ! -e /etc/ssh/ssh_host_ed25519_key.pub
         test ! -e /etc/shroom/authorized_keys
+        user=${2:?guest username is required}
+        case "$user" in
+            ''|root|[!a-z]*|*[!a-z0-9_-]*) echo 'invalid guest username' >&2; exit 2 ;;
+        esac
+        test "${#user}" -le 32
+        test "$(id -u developer)" = 1000
+        test "$(id -g developer)" = 1000
+        if [ "$user" != developer ]; then
+            if getent passwd "$user" >/dev/null || getent group "$user" >/dev/null; then
+                echo 'guest username already exists in the image' >&2
+                exit 2
+            fi
+            usermod --login "$user" --home "/home/$user" --move-home developer
+            groupmod --new-name "$user" developer
+        fi
+        sed -i "s/^AllowUsers .*/AllowUsers $user/" /etc/ssh/sshd_config
         IFS= read -r client_key
         printf '%s\n' "$client_key" > /etc/shroom/authorized_keys
         chmod 0644 /etc/shroom/authorized_keys

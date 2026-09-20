@@ -164,6 +164,7 @@ async fn ssh_options_ignore_ambient_configuration_and_agents() {
             host_key: fixture.host,
         },
         "127.0.0.1:2222".parse().unwrap(),
+        &GuestUser::default(),
     );
     let command = connection.command();
     let output = Helper::output(

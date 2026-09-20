@@ -37,6 +37,7 @@ impl Fixture {
         Workspace {
             name: name.parse().unwrap(),
             state,
+            options: Default::default(),
             ssh: (state == SandboxStatus::Running).then(|| Self::connection(name)),
         }
     }

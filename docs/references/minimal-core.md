@@ -1,10 +1,10 @@
-# Minimal core
+# Minimal Core
 
-Status: implementation proposal, not implemented. Revised on 2026-09-20.
-The agreed direction is a thin SSH workspace library over the microsandbox SDK.
-The runtime and guest SSH behavior still need validation on the target platforms.
+This reference records the approved thin SSH workspace library over the microsandbox SDK.
+The [validation report](../evaluations/2026-09-20-minimal-core/README.md) records the passing macOS ARM64
+acceptance run and the remaining Linux x86-64 runtime validation.
 
-## Purpose and scope
+## Purpose and Scope
 
 Shroom makes microsandbox's persistent Linux sandboxes usable by existing SSH clients.
 Microsandbox already owns sandbox creation, lifecycle, filesystem persistence, and runtime status.
@@ -26,7 +26,7 @@ Ordinary SSH clients supply shell execution, SFTP, and application tunnels.
 Tart and direct Virtualization.framework integration are deferred.
 Implement no provider trait, provider registry, or compatibility layer for a hypothetical second runtime.
 
-## Architecture and responsibility
+## Architecture and Responsibility
 
 The library calls the microsandbox SDK directly.
 OpenSSH runs inside the guest, and microsandbox publishes its port on host loopback.
@@ -62,7 +62,7 @@ Use native SDK types and errors wherever they already express the required meani
 
 `Core` serializes mutations with `&mut self`; SSH sessions remain independently concurrent.
 Opening a core acquires the state-directory lock before configuring the local SDK backend.
-The following signatures are proposed API shapes, not compiled code.
+The public API uses the following signatures.
 `SandboxStatus` is the pinned SDK's native status type; the other domain types below belong to Shroom.
 
 ```rust
@@ -97,8 +97,10 @@ impl Core {
 }
 ```
 
-`Config` contains the pinned runtime executable and firmware paths.
-The image and guest profile are fixed by this implementation.
+`Config` contains `runtime_executable` and `firmware` paths for the pinned runtime pair.
+The executable must be the binary itself, since SDK version inspection does not execute shell wrappers.
+The fixed image is `localhost/shroom-workspace:0.1.0`, imported into the private SDK home before creation.
+Shroom uses `PullPolicy::Never`; the [repository setup instructions](../../README.md) describe the explicit import.
 `HostPort` validates 1024–65535 before use. Choosing a port explicitly avoids adding an allocator.
 Microsandbox may retain its native mapping across restarts; Shroom always reads the current endpoint instead
 of promising address stability or maintaining its own mapping.
@@ -126,7 +128,7 @@ Malformed existing access files produce errors; missing or incomplete access mat
 by `start` and is never repaired implicitly.
 The directory is a client hint; an ordinary SSH session begins in the account's home.
 
-## SSH identity and connection refresh
+## SSH Identity and Connection Refresh
 
 Generate a unique guest host key once during creation and read its public half
 through the SDK's guest administration channel.
@@ -158,7 +160,7 @@ Do not promise automatic refresh or `HostKeyAlias` support in every app.
 Such clients need their own verified pinning and refresh path, or an explicit manual reconnect.
 Existing sessions and application tunnels do not survive a VM restart.
 
-## State ownership
+## State Ownership
 
 Give the SDK a dedicated home and configuration path under `microsandbox/`.
 The SDK sandbox name is the workspace name inside this private catalog; no name or native-ID mapping is needed.
@@ -179,12 +181,14 @@ One exclusive OS file lock prevents two Shroom instances from provisioning or ch
 The lock is released when the core or caller exits.
 Detached sandboxes continue independently, and the SDK supplies their status on reopening.
 Direct external mutation of this private catalog is unsupported; Shroom does not adopt unrelated sandboxes.
+State paths must fit the SDK's Unix socket path limit and be UTF-8 without control characters or `$`.
+OpenSSH path options quote spaces and escape literal percent characters.
 
 Keep access directories mode `0700` and client private keys mode `0600`.
 The private host key and authorized client public key remain in the guest.
 Never copy client private keys, personal SSH identities, or host credentials into the guest.
 
-## Guest profile
+## Guest Profile
 
 Build one Debian-based OCI image recipe with the guest account, tools, and OpenSSH configuration.
 Use 2 vCPUs and 4 GiB of memory, with no automatic idle expiry.
@@ -204,7 +208,7 @@ Configure the SDK's networking policy to allow public egress while restricting h
 Publish SSH on host loopback only.
 Validate these settings on the pinned runtime; Shroom implements no packet filtering or port-forwarding service.
 
-## Microsandbox integration
+## Microsandbox Integration
 
 Use an explicit local SDK backend with both its home and configuration path under `microsandbox/`. Scope calls through
 the SDK's backend facility and preserve machine policy; reject conflicting mounts or credential projection. Keep SDK
@@ -226,18 +230,20 @@ An occupied persisted port may make a later start fail.
 The SSH contract permits address changes but does not require automatic port reassignment
 or rewriting microsandbox's persisted configuration.
 
-Pin the SDK and matching executable/firmware as a tested set.
-The previously inspected SDK revision reports 0.7.2; it is a candidate for testing, not a validated runtime selection.
-Use SDK verification facilities and reject unexpected versions.
-Verify that guest OpenSSH survives its launch command and caller exit.
+The SDK is pinned to `e9565401dacde7e5c3a8fb935574c785aa1bc8f1`, which reports version 0.7.2.
+Use the matching preinstalled 0.7.2 executable and firmware; the validation report identifies the tested macOS pair.
+SDK runtime resolution checks the pair's paths, and SDK executable inspection rejects unexpected or absent versions.
+OpenSSH survives its launch command and caller exit in the tested guest profile.
 
-## Operation flows and failures
+## Operation Flows and Failures
 
 Creation validates the request, rejects existing native names or access directories, and generates the client key.
 It creates a detached sandbox through the SDK, provisions guest SSH through the SDK's administration channel,
 persists the host-key pin, then probes the published endpoint.
 Success means an authenticated non-root SSH connection worked.
 The probe and all bootstrap/discovery waits have finite deadlines.
+The implementation bounds boot at 120 seconds, guest administration and endpoint discovery at 15 seconds,
+and graceful stop at 30 seconds. Each host helper also has a finite deadline and terminates on cancellation.
 
 Start requires an existing sandbox and existing access files.
 It starts or inspects that sandbox, discovers its current endpoint,
@@ -267,8 +273,8 @@ A sandbox whose initial host-key pin was never stored must be removed and recrea
 
 Preserve typed SDK errors with operation context and their original sources,
 including lifecycle conflicts, missing sandboxes, unsupported states, and stop timeouts.
-Add Shroom errors only for its own boundaries: invalid names/ports, access-directory conflicts,
-`CoreInUse`, `AccessIncomplete`, `HostKeyMismatch`, and `SshUnavailable`.
+Add Shroom errors only for its own boundaries, including invalid names/ports, access-directory and port conflicts,
+malformed access files, helper failures, `CoreInUse`, `AccessIncomplete`, `HostKeyMismatch`, and `SshUnavailable`.
 Do not duplicate the SDK's runtime error taxonomy.
 
 Ordinary helper subprocesses terminate on cancellation.
@@ -278,7 +284,7 @@ Dropping the core releases its lock, not its workspaces.
 After host reboot, callers explicitly start them.
 Logs contain bounded diagnostics without private keys or authentication secrets.
 
-## Acceptance tests
+## Acceptance Tests
 
 Exercise the workspace contract against the real microsandbox runtime on both target platforms.
 Focus on Shroom's SSH setup and selected SDK configuration; do not recreate upstream's general test suite.
@@ -303,7 +309,7 @@ Also check occupied ports, loopback-only publishing, and complete paginated disc
 The endpoint-refresh test exercises SSH trust at another endpoint; it adds no port-reassignment API.
 Native SSH forwarding is exercised through an external client; the core owns no application tunnels.
 
-## Organization and implementation order
+## Organization and Validation
 
 Keep one crate with `lib.rs` for the public types, `core.rs` for SDK calls and operation flows,
 and `access.rs` for keys, trust files, and SSH probing.
@@ -315,23 +321,10 @@ Use OS file locking from the selected Rust toolchain or one small dependency.
 Register every dependency in the root workspace manifest, as required by `AGENTS.md`.
 Host `ssh` and `ssh-keygen` are explicit prerequisites; invoke tools without a shell.
 
-Implement in this order:
+The library lives under `crates/shroom-core`; tests use the real SDK and opt into a prepared local runtime.
+The initial implementation followed the runtime proof with the concrete core, trust tests, and client/isolation checks.
+The validation report owns experimental evidence and outstanding platform checks.
+The full agent matrix and runtime/image distribution remain later product work.
 
-1. Prove one microsandbox guest: trusted provisioning, non-root SSH, persistent host key,
-   endpoint discovery, caller-exit survival, and graceful shutdown.
-2. Implement the concrete core and access flow directly over the SDK.
-3. Run the workspace suite, including an endpoint change and a deliberately wrong host key.
-4. Validate isolation and one real client's reconnect behavior, then run microsandbox on Linux x86-64.
-   The full agent matrix and runtime/image distribution remain later product work.
-
-For this scope, estimate approximately 900–1,600 production Rust lines and 600–1,000 lines
-of tests and guest/build support.
-This is a planning range, not a measured implementation size.
-It assumes the SDK supplies the documented lifecycle, persistence, administration, and networking behavior;
-most Shroom code should be access handling and thin SDK call sequences.
-Distribution, automatic installation, UI, agent integrations, and additional runtimes are excluded.
-
-Guest SSH startup and runtime compatibility are the main uncertainties.
-If validation exposes a gap that requires Shroom to implement VM supervision, persistence,
-or networking, revisit the runtime choice or scope before expanding the core.
-Shroom's purpose is to compose existing capabilities with minimal new machinery.
+If later validation exposes a gap requiring Shroom to implement VM supervision, persistence, or networking,
+revisit the runtime choice or scope before expanding the core.

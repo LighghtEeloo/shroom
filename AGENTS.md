@@ -4,8 +4,8 @@ Guidance for automated assistants working in this repository.
 `Prefer` and `consider` mark defaults that allow task-specific judgment; other directives are requirements
 within their stated scope.
 
-Shroom is an SSH-first workspace manager planned as a thin, cross-platform Rust layer over microsandbox.
-The [minimal core proposal](docs/proposals/minimal-core.md) defines its scope, SSH access contract,
+Shroom is an SSH-first workspace manager with a thin, cross-platform Rust core over microsandbox.
+The [minimal core reference](docs/references/minimal-core.md) defines its scope, SSH access contract,
 and the responsibilities delegated to the SDK.
 
 ## Language and Terminology

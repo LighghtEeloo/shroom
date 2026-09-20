@@ -1,0 +1,20 @@
+Port 22
+HostKey /etc/ssh/ssh_host_ed25519_key
+AuthorizedKeysFile /etc/shroom/authorized_keys
+AllowUsers developer
+PermitRootLogin no
+PubkeyAuthentication yes
+AuthenticationMethods publickey
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitEmptyPasswords no
+UsePAM no
+StrictModes yes
+AllowTcpForwarding local
+AllowAgentForwarding no
+X11Forwarding no
+PermitTunnel no
+PermitUserEnvironment no
+GatewayPorts no
+PrintMotd no
+Subsystem sftp internal-sftp

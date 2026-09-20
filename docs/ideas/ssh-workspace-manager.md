@@ -8,7 +8,7 @@ without replacing their interfaces.
 ## Design
 
 Build a lightweight, cross-platform Rust app over microsandbox, with priority on macOS and Linux.
-The [minimal core proposal](../proposals/minimal-core.md) defines the thin SDK integration and SSH connection contract.
+The [minimal core reference](../references/minimal-core.md) defines the thin SDK integration and SSH connection contract.
 An attachment is exported connection details or, in the broader product, a launch recipe.
 
 Target native SSH for Codex, Claude Desktop, Cursor, and ZCode.
@@ -33,7 +33,7 @@ to be tested with microsandbox and each client.
 
 ## Tasks
 
-Implement the [minimal core](../proposals/minimal-core.md) first.
+Build on the [minimal core](../references/minimal-core.md).
 Broader product work includes packaging pinned runtimes and guest images,
 connection export, and generic command-and-tunnel recipes.
 Validate each agent's guest-bound editing and execution, reconnects, persistence,

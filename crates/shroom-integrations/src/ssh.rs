@@ -78,6 +78,25 @@ impl Attachment {
         format!("Host {}\n{options}", self.alias)
     }
 
+    /// Render a POSIX-shell command for an interactive login with the same pinned trust policy.
+    /// It is independent of the user's SSH configuration and never changes that configuration.
+    pub fn ssh_command_line(&self) -> String {
+        let options = self
+            .options()
+            .into_iter()
+            .map(|(key, value)| {
+                format!(
+                    "  -o {} \\\n",
+                    Encoding::shell_word(&format!("{key}={value}"))
+                )
+            })
+            .collect::<String>();
+        format!(
+            "ssh -F /dev/null \\\n{options}  {}",
+            Encoding::shell_word(self.alias.as_str())
+        )
+    }
+
     /// Build a command that runs as the workspace user in the hinted directory.
     /// No host shell is involved. The caller owns spawning, I/O, cancellation, and waiting.
     pub fn command(&self, remote: &RemoteCommand, terminal: Terminal) -> Command {

@@ -34,6 +34,11 @@ included file has not been validated. The library never edits that file or app s
 An exported stanza cannot remove additive identities or forwards elsewhere in a user's configuration,
 so check the application's effective configuration with `ssh -G <alias>` when incorporating it.
 
+`ssh_command_line()` renders a multiline POSIX-shell command for an ordinary interactive login. It uses
+`ssh -F /dev/null` and the same complete option set as the stanza, quoting each argument for the host shell.
+The caller can copy this command directly without installing an SSH config entry. As with native SSH sessions,
+the login begins in the guest user's home; no remote command or directory change is imposed.
+
 The stanza carries the current endpoint, workspace user, client identity, dedicated known-hosts file,
 and endpoint-independent `HostKeyAlias` required by the core's trust contract. It requests strict checking,
 public-key authentication, no SSH agent or agent forwarding, and no connection multiplexing. It leaves

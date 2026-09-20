@@ -1,0 +1,22 @@
+[package]
+name = "shroom-app"
+description = "A minimal Freya desktop app for Shroom workspaces"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+freya = { workspace = true }
+microsandbox = { workspace = true }
+shroom-core = { workspace = true }
+shroom-integrations = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+freya-testing = { workspace = true }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

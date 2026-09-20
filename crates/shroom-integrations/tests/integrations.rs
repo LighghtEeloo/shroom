@@ -206,6 +206,61 @@ fn refreshing_endpoint_preserves_alias_and_trust() {
 }
 
 #[test]
+fn copied_login_command_preserves_shell_literals_and_the_effective_ssh_policy() {
+    let fixture = Fixture::new();
+    let attachment = fixture.attachment();
+    let text = attachment.ssh_command_line();
+    let output = Command::new("/bin/sh")
+        .arg("-c")
+        .arg(text.replacen("ssh ", "ssh -G ", 1))
+        .current_dir(fixture.root.path())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let direct = attachment.command(&RemoteCommand::new("true").unwrap(), Terminal::None);
+    let expected = Command::new("ssh")
+        .arg("-G")
+        .args(direct.get_args())
+        .output()
+        .unwrap();
+    assert!(expected.status.success());
+    let actual = String::from_utf8(output.stdout).unwrap();
+    let expected = String::from_utf8(expected.stdout).unwrap();
+    for prefix in [
+        "hostname ",
+        "port ",
+        "user ",
+        "identityfile ",
+        "userknownhostsfile ",
+        "hostkeyalias ",
+        "stricthostkeychecking ",
+        "identityagent ",
+        "batchmode ",
+        "proxycommand ",
+        "controlpath ",
+        "globalknownhostsfile ",
+        "forwardagent ",
+    ] {
+        assert_eq!(
+            actual
+                .lines()
+                .filter(|line| line.starts_with(prefix))
+                .collect::<Vec<_>>(),
+            expected
+                .lines()
+                .filter(|line| line.starts_with(prefix))
+                .collect::<Vec<_>>(),
+            "{prefix}"
+        );
+    }
+    assert!(!fixture.root.path().join("SHOULD_NOT_EXIST").exists());
+}
+
+#[test]
 fn shell_quoting_preserves_literal_arguments_and_directory() {
     let fixture = Fixture::new();
     let values = [

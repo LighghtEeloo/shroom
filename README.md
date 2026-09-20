@@ -1,13 +1,33 @@
 # Shroom
 
-Shroom is an SSH-first workspace library over microsandbox. The core exposes `create`, `list`, `get`,
+Shroom is an SSH-first workspace manager over microsandbox. The core exposes `create`, `list`, `get`,
 `start`, `stop`, and `remove`, returning connection details for existing SSH clients.
 See the [core contract](docs/references/shroom-core.md#ssh-workspace-core) and [documentation index](docs/README.md).
 
-The repository contains the workspace library in `crates/shroom-core`, agent app connection exports and launch
-recipes in `crates/shroom-integrations`, a typed Lume HTTP client in `crates/shroom-lume`, a prepared microsandbox
-guest recipe in `images/workspace`, and documentation in `docs`.
+The repository contains a Freya desktop app in `crates/shroom-app`, the workspace library in `crates/shroom-core`,
+agent app connection exports and launch recipes in `crates/shroom-integrations`, a typed Lume HTTP client in
+`crates/shroom-lume`, a prepared microsandbox guest recipe in `images/workspace`, and documentation in `docs`.
 It has no CLI or resident service of its own.
+
+## Desktop App
+
+Run the native interface with:
+
+```sh
+cargo run -p shroom-app --locked
+```
+
+Enter the state directory, microsandbox executable, and firmware paths, then choose **Open workspaces**.
+Select a workspace in the sidebar to connect, start, stop, or delete it. The connection panel copies a full
+SSH command or configuration and shows the last authenticated verification separately from runtime state.
+Optional Details shows connection fields and a command for inspecting the same private catalog with `msb`.
+**Local workspaces** opens environment settings for image import and changing directories. Incomplete setups
+appear under **Needs attention** for explicit cleanup. The app follows the system's light or dark appearance.
+Runtime and image setup are described below. See the
+[desktop app reference](docs/references/desktop-app.md) for configuration and behavior.
+
+Freya's [development setup](https://docs.rs/freya/0.4.3/freya/_docs/development_setup/index.html)
+lists the native build dependencies, including Linux packages. The first build downloads Skia artifacts.
 
 ## Development
 
@@ -42,7 +62,8 @@ MSB_CONFIG_PATH="$HOME/.shroom/microsandbox/config.json" \
 ```
 
 Import the image before opening a core at the same state root. Shroom uses the fixed local image tag
-with the SDK's `Never` pull policy. Runtime and image installation remain explicit setup steps.
+with the SDK's `Never` pull policy. In the desktop app, **Import image** performs this import into the open
+state directory; the CLI import above is an alternative. Runtime and image installation remain explicit setup steps.
 Choose a short state path because the SDK derives Unix socket paths from it. Paths must be UTF-8
 without control characters or `$`; spaces and literal percent characters are supported.
 

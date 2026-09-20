@@ -4,9 +4,9 @@ Guidance for automated assistants working in this repository.
 `Prefer` and `consider` mark defaults that allow task-specific judgment; other directives are requirements
 within their stated scope.
 
-Shroom is an SSH-first workspace manager planned as a lightweight, cross-platform Rust app over the microsandbox SDK.
-A workspace is a persistent Linux VM with a stable loopback SSH endpoint.
-An attachment is exported connection details or a launch recipe.
+Shroom is an SSH-first workspace manager planned as a thin, cross-platform Rust layer over microsandbox.
+The [minimal core proposal](docs/proposals/minimal-core.md) defines its scope, SSH access contract,
+and the responsibilities delegated to the SDK.
 
 ## Language and Terminology
 
@@ -87,8 +87,8 @@ Scratch records in `docs/logs/` are temporary; fold durable content into its pro
 Establish motivation and context before introducing machinery; explain which question each mechanism answers.
 Introduce concepts before relying on them, and let information density rise gradually.
 Connect paragraphs with reasoning that explains the next step, especially before increasing technical detail.
-Use technical terminology where precise, explaining specialized terms at first use
-with source-level intuition or a concrete example.
+Use technical terminology where precise, explaining specialized terms at first use with source-level intuition
+or a concrete example.
 
 Give each paragraph one overarching point.
 Develop it through motivation, mechanism, evidence, or consequence; split the paragraph when its question changes.

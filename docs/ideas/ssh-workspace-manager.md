@@ -2,17 +2,24 @@
 
 ## Motivation
 
-Use existing coding-agent apps in isolated, persistent workspaces shared across agents, without replacing their interfaces.
+Use existing coding-agent apps in isolated, persistent workspaces shared across agents,
+without replacing their interfaces.
 
 ## Design
 
-Build a lightweight, cross-platform Rust app over the microsandbox SDK, with priority on macOS and Linux. A workspace is a persistent Linux VM with a stable loopback SSH endpoint. An attachment is exported connection details or a launch recipe.
+Build a lightweight, cross-platform Rust app over microsandbox, with priority on macOS and Linux.
+The [minimal core proposal](../proposals/minimal-core.md) defines the thin SDK integration and SSH connection contract.
+An attachment is exported connection details or, in the broader product, a launch recipe.
 
-Target native SSH for Codex, Claude Desktop, Cursor, and ZCode. Run Kimi Code and `dsh` inside the guest through SSH or forwarded web interfaces. Use per-workspace authorization, persistent host keys, and non-root users; do not share host files or credentials by default.
+Target native SSH for Codex, Claude Desktop, Cursor, and ZCode.
+Run Kimi Code and `dsh` inside the guest through SSH or forwarded web interfaces.
+Use per-workspace authorization, persistent host keys, and non-root users; do not share host files
+or credentials by default.
 
 ## Agents and Integration Analysis
 
-Planned integrations; compatibility with microsandbox remains to be tested.
+Planned integrations; compatibility, connection refresh, and host-key verification remain
+to be tested with microsandbox and each client.
 
 | Agent | Connection | Integration work and constraints |
 | --- | --- | --- |
@@ -26,6 +33,11 @@ Planned integrations; compatibility with microsandbox remains to be tested.
 
 ## Tasks
 
-Package a pinned runtime and guest images. Implement workspace lifecycle, SSH serving, connection export, and generic command-and-tunnel recipes. Validate each agent’s guest-bound editing and execution, reconnects, persistence, and access isolation across supported platforms.
+Implement the [minimal core](../proposals/minimal-core.md) first.
+Broader product work includes packaging pinned runtimes and guest images,
+connection export, and generic command-and-tunnel recipes.
+Validate each agent's guest-bound editing and execution, reconnects, persistence,
+and access isolation across supported platforms.
 
-Defer custom agent interfaces, MCP, cloud workers, synchronization, credential management, and conversation migration. Exclude Grok Bot until a workspace-bound integration is established.
+Defer custom agent interfaces, MCP, cloud workers, synchronization, credential management, and conversation migration.
+Exclude Grok Bot until a workspace-bound integration is established.

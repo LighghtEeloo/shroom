@@ -4,8 +4,9 @@ Shroom is an SSH-first workspace library over microsandbox. The core exposes `cr
 `start`, `stop`, and `remove`, returning connection details for existing SSH clients.
 See the [core contract](docs/references/minimal-core.md) and [documentation index](docs/README.md).
 
-The repository contains one Rust crate in `crates/shroom-core`, a prepared guest recipe in
-`images/workspace`, and documentation in `docs`. It has no CLI or resident service.
+The repository contains the workspace library in `crates/shroom-core`, agent app connection exports and launch
+recipes in `crates/shroom-integrations`, a prepared guest recipe in `images/workspace`, and documentation in `docs`.
+It has no CLI or resident service.
 
 ## Development
 
@@ -67,3 +68,25 @@ async fn example() -> shroom_core::Result<()> {
 Pass the returned identity, host key or `known_hosts` file, and `HostKeyAlias` to your SSH client.
 Refresh connection details after each start. The full trust options are defined in the core contract.
 Dropping `Core` releases its directory lock and leaves detached workspaces running.
+
+## Agent App Integrations
+
+`shroom-integrations` exports SSH configuration for native agent apps and builds runnable guest commands
+and loopback web forwards. Start with fresh core connection details:
+
+```rust
+use shroom_core::SshConnection;
+use shroom_integrations::Attachment;
+
+fn export(connection: SshConnection) -> shroom_integrations::Result<String> {
+    let attachment = Attachment::new("shroom-project".parse()?, connection)?;
+    Ok(attachment.ssh_config())
+}
+```
+
+The caller places the returned stanza in its SSH configuration. Native setup guidance covers Codex,
+Claude Desktop, Cursor, and ZCode, with ZCode's own host-key verification still unverified.
+Kimi CLI and Kimi/DeepSeek Harness web recipes use tools installed in the guest. Web forwards take the
+application's actual reported URL, including any login token, because the requested port may change.
+See the [integration contract and examples](docs/references/agent-integrations.md) for process ownership,
+connection refresh, and [validation limits](docs/evaluations/2026-09-20-agent-integrations/README.md).

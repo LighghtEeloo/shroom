@@ -4302,6 +4302,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "shroom-integrations"
+version = "0.1.0"
+dependencies = [
+ "derive_more",
+ "shroom-core",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "url",
+]
+
+[[package]]
 name = "signal-hook"
 version = "0.3.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -9,33 +9,26 @@ without replacing their interfaces.
 
 Build a lightweight, cross-platform Rust app over microsandbox, with priority on macOS and Linux.
 The [minimal core reference](../references/minimal-core.md) defines the thin SDK integration and SSH connection contract.
-An attachment is exported connection details or, in the broader product, a launch recipe.
+The [agent integration reference](../references/agent-integrations.md) defines connection exports and launch recipes.
 
 Target native SSH for Codex, Claude Desktop, Cursor, and ZCode.
 Run Kimi Code and `dsh` inside the guest through SSH or forwarded web interfaces.
 Use per-workspace authorization, persistent host keys, and non-root users; do not share host files
 or credentials by default.
 
-## Agents and Integration Analysis
+## Agent Integration Status
 
-Planned integrations; compatibility, connection refresh, and host-key verification remain
-to be tested with microsandbox and each client.
-
-| Agent | Connection | Integration work and constraints |
-| --- | --- | --- |
-| [Codex (ChatGPT desktop)](https://learn.chatgpt.com/docs/remote-connections) | Native SSH | Export SSH configuration; install and authenticate Codex in the guest; verify its login-shell `PATH`. |
-| [Claude Desktop (Code)](https://code.claude.com/docs/en/desktop#ssh-sessions) | Native SSH | Export connection details. Desktop installs Claude Code remotely on first connection. |
-| [Cursor](https://cursor.com/docs/agent/agents-window) | Native remote SSH | Export SSH configuration; validate remote-server installation and operation. |
-| [ZCode](https://zcode.z.ai/en/docs/remote-development) | Native SSH | Export a real TCP endpoint and key path; its client ignores `ProxyCommand` and `ProxyJump`. |
-| [DeepSeek Harness (`dsh`)](https://github.com/deepseek-ai/deepseek-harness) | Guest web server through an SSH tunnel | Launch `npx @deepseek-ai/dsh web --no-open`; forward its port and open the local URL. |
-| [Kimi Code](https://raw.githubusercontent.com/MoonshotAI/kimi-cli/main/docs/en/reference/kimi-web.md) | Guest CLI or tunneled web interface | Launch `kimi` or `kimi web --no-open`; reuse the same tunnel helper for web access. |
-| [Grok Bot](https://docs.x.ai/grok-bot/computer-and-apps) | No verified workspace-bound path | Its documented workspace is cloud-hosted. Defer until workspace replacement is established. |
+The connection and command layer is implemented in `shroom-integrations`.
+The [integration reference](../references/agent-integrations.md#attachments-and-native-applications) owns native
+application setup and trust requirements; its [web integration section](../references/agent-integrations.md#web-applications-and-forwarding)
+describes Kimi and DeepSeek Harness launch/forwarding. The
+[evaluation](../evaluations/2026-09-20-agent-integrations/README.md) distinguishes transport validation from
+the remaining application-level compatibility checks.
 
 ## Tasks
 
 Build on the [minimal core](../references/minimal-core.md).
-Broader product work includes packaging pinned runtimes and guest images,
-connection export, and generic command-and-tunnel recipes.
+Broader product work includes packaging pinned runtimes and guest images and validating agent applications.
 Validate each agent's guest-bound editing and execution, reconnects, persistence,
 and access isolation across supported platforms.
 

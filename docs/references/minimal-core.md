@@ -324,7 +324,8 @@ Host `ssh` and `ssh-keygen` are explicit prerequisites; invoke tools without a s
 The library lives under `crates/shroom-core`; tests use the real SDK and opt into a prepared local runtime.
 The initial implementation followed the runtime proof with the concrete core, trust tests, and client/isolation checks.
 The validation report owns experimental evidence and outstanding platform checks.
-The full agent matrix and runtime/image distribution remain later product work.
+The [agent integration layer](agent-integrations.md) provides connection exports and command recipes outside
+the core. Full application compatibility validation and runtime/image distribution remain further product work.
 
 If later validation exposes a gap requiring Shroom to implement VM supervision, persistence, or networking,
 revisit the runtime choice or scope before expanding the core.

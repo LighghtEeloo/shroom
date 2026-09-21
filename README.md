@@ -35,6 +35,8 @@ lists the native build dependencies, including Linux packages. The first build d
 ## Development
 
 The pinned Rust toolchain is installed through rustup. Dependencies live in the root workspace manifest.
+On Ubuntu, install the native library packages listed in the [CI workflow](.github/workflows/ci.yml)
+before running the checks below. They provide Freya's graphics and font libraries and microsandbox's `libcap-ng`.
 
 ```sh
 cargo fmt --all -- --check

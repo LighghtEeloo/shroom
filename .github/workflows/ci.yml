@@ -14,6 +14,18 @@ jobs:
         with:
           toolchain: 1.98.1
           components: rustfmt, clippy
+      - name: Install Linux native dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            libcap-ng-dev \
+            libegl-dev \
+            libfontconfig-dev \
+            libfreetype-dev \
+            libgl-dev \
+            libgles-dev \
+            libwayland-dev
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked

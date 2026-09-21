@@ -7,22 +7,93 @@ use std::{
 };
 
 use shroom_integrations::{
-    Attachment, Error, GuestPort, GuestWebUrl, HostKeyHandling, NativeApp, RemoteCommand, SshAlias,
-    Terminal, WebApp,
+    Attachment, Error, GuestDirectory, GuestPort, GuestWebUrl, HostKeyHandling, NativeApp,
+    RemoteCommand, SshAlias, Terminal, WebApp,
 };
 use support::Fixture;
+
+#[test]
+fn project_terminal_rendering_preserves_argv_and_directory_guards_prevent_execution() {
+    let fixture = Fixture::new();
+    let project = fixture.project();
+    let output = Command::new("/bin/sh")
+        .arg("-c")
+        .arg(format!(
+            "ssh() {{ printf '%s\\0' \"$@\"; }}; {}",
+            project.terminal_command_line()
+        ))
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let expected = project
+        .terminal_command()
+        .get_args()
+        .flat_map(|arg| arg.to_str().unwrap().bytes().chain([0]))
+        .collect::<Vec<_>>();
+    assert_eq!(output.stdout, expected);
+    let marker = fixture.root.path().join("unexpected");
+    let remote = RemoteCommand::new("touch")
+        .unwrap()
+        .with_arg(marker.to_str().unwrap())
+        .unwrap();
+    let file = fixture.root.path().join("file");
+    fs::write(&file, "preserve").unwrap();
+    let broken = fixture.root.path().join("broken-link");
+    std::os::unix::fs::symlink(fixture.root.path().join("missing"), &broken).unwrap();
+    let race = fixture.root.path().join("race");
+    fs::create_dir(&race).unwrap();
+    let mut project = project;
+    let linked = fixture.root.path().join("linked-directory");
+    std::os::unix::fs::symlink(&race, &linked).unwrap();
+    project.directory = linked.to_str().unwrap().parse().unwrap();
+    let linked_probe = project.check_directory_command();
+    assert!(
+        Command::new("/bin/sh")
+            .arg("-c")
+            .arg(linked_probe.get_args().last().unwrap())
+            .status()
+            .unwrap()
+            .success()
+    );
+    project.directory = race.to_str().unwrap().parse().unwrap();
+    let probe = project.check_directory_command();
+    assert!(
+        Command::new("/bin/sh")
+            .arg("-c")
+            .arg(probe.get_args().last().unwrap())
+            .status()
+            .unwrap()
+            .success()
+    );
+    fs::remove_dir(&race).unwrap();
+    for path in [file, broken, race] {
+        project.directory = path.to_str().unwrap().parse().unwrap();
+        let command = project.command(&remote, Terminal::None);
+        let output = Command::new("/bin/sh")
+            .arg("-c")
+            .arg(command.get_args().last().unwrap())
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(shroom_integrations::Project::DIRECTORY_UNAVAILABLE)
+        );
+        assert!(!marker.exists());
+    }
+}
 
 #[test]
 fn codex_handoff_encodes_the_remote_folder_and_rejects_silently_trimmed_paths() {
     let fixture = Fixture::new();
     for directory in [
+        "/",
         "/workspace",
+        "/mnt/$HOME/project/../folder/",
         "/workspace/用户 files?x=1&enabled=false#%+'\"",
     ] {
-        let mut connection = fixture.connection.clone();
-        connection.directory = directory.into();
-        let attachment = Attachment::new("shroom-test".parse().unwrap(), connection).unwrap();
-        let url = attachment.codex_project_url().unwrap();
+        let mut project = fixture.project();
+        project.directory = directory.parse().unwrap();
+        let url = project.codex_project_url();
         assert_eq!(url.scheme(), "codex");
         assert_eq!(url.host_str(), Some("settings"));
         assert_eq!(url.path(), "/connections/ssh/add");
@@ -36,15 +107,23 @@ fn codex_handoff_encodes_the_remote_folder_and_rejects_silently_trimmed_paths() 
             ]
         );
     }
-    for directory in ["/workspace/trailing ", "/workspace/trailing\u{feff}"] {
-        let mut connection = fixture.connection.clone();
-        connection.directory = directory.into();
-        let attachment = Attachment::new("shroom-test".parse().unwrap(), connection).unwrap();
+    for directory in [
+        " /workspace",
+        "\u{feff}/workspace",
+        "/workspace/trailing ",
+        "/workspace/trailing\u{feff}",
+        "relative",
+        "~/project",
+        "$HOME/project",
+        "",
+        "/tmp/project\n",
+        "/tmp/pro\0ject",
+        "/tmp/pro\tject",
+    ] {
         assert!(matches!(
-            attachment.codex_project_url(),
-            Err(Error::InvalidCodexDirectory)
+            directory.parse::<GuestDirectory>(),
+            Err(Error::InvalidGuestDirectory)
         ));
-        assert_eq!(attachment.connection().directory, directory);
     }
 }
 
@@ -126,16 +205,6 @@ fn attachments_reject_malformed_connections_without_touching_access_files() {
         build(connection),
         Err(Error::InvalidConnection("host key and alias disagree"))
     ));
-    for directory in ["relative", "/tmp/project\n", ""] {
-        let mut connection = fixture.connection.clone();
-        connection.directory = directory.into();
-        assert!(matches!(
-            build(connection),
-            Err(Error::InvalidConnection(
-                "expected an absolute guest directory without control characters"
-            ))
-        ));
-    }
     assert_eq!(
         fs::read(&fixture.connection.identity_file).unwrap(),
         original
@@ -161,7 +230,7 @@ fn openssh_resolves_exported_config_and_commands_with_the_same_trust_policy() {
         String::from_utf8_lossy(&output.stderr)
     );
     let config = String::from_utf8(output.stdout).unwrap();
-    let command = attachment.command(&RemoteCommand::new("true").unwrap(), Terminal::None);
+    let command = attachment.login_command(&RemoteCommand::new("true").unwrap(), Terminal::None);
     let output = Command::new("ssh")
         .arg("-G")
         .args(command.get_args())
@@ -257,7 +326,7 @@ fn copied_login_command_preserves_shell_literals_and_the_effective_ssh_policy() 
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let direct = attachment.command(&RemoteCommand::new("true").unwrap(), Terminal::None);
+    let direct = attachment.login_command(&RemoteCommand::new("true").unwrap(), Terminal::None);
     let expected = Command::new("ssh")
         .arg("-G")
         .args(direct.get_args())
@@ -320,7 +389,7 @@ fn shell_quoting_preserves_literal_arguments_and_directory() {
             |command, arg| command.with_arg(*arg),
         )
         .unwrap();
-    let command = fixture.attachment().command(&remote, Terminal::None);
+    let command = fixture.project().command(&remote, Terminal::None);
     let output = Command::new("/bin/sh")
         .arg("-c")
         .arg(command.get_args().last().unwrap())
@@ -341,12 +410,12 @@ fn shell_quoting_preserves_literal_arguments_and_directory() {
     );
     assert!(!fixture.root.path().join("SHOULD_NOT_EXIST").exists());
     assert!(
-        !std::path::Path::new(&fixture.connection.directory)
+        !std::path::Path::new(&fixture.directory)
             .join("SHOULD_NOT_EXIST")
             .exists()
     );
     let remote = RemoteCommand::new("/bin/pwd").unwrap();
-    let command = fixture.attachment().command(&remote, Terminal::None);
+    let command = fixture.project().command(&remote, Terminal::None);
     let output = Command::new("/bin/sh")
         .arg("-c")
         .arg(command.get_args().last().unwrap())
@@ -356,7 +425,7 @@ fn shell_quoting_preserves_literal_arguments_and_directory() {
     // macOS /var is a symlink to /private/var.
     assert_eq!(
         fs::canonicalize(String::from_utf8(output.stdout).unwrap().trim()).unwrap(),
-        fs::canonicalize(&fixture.connection.directory).unwrap()
+        fs::canonicalize(&fixture.directory).unwrap()
     );
 }
 
@@ -383,14 +452,15 @@ fn bad_commands_and_missing_directories_never_run_the_program() {
         Err(Error::InvalidArgument)
     ));
     let fixture = Fixture::new();
-    let mut connection = fixture.connection.clone();
-    connection.directory.push_str("/does-not-exist");
-    let attachment = Attachment::new("test".parse().unwrap(), connection).unwrap();
+    let mut project = fixture.project();
+    project.directory = format!("{}/does-not-exist", fixture.directory)
+        .parse()
+        .unwrap();
     let remote = RemoteCommand::new("touch")
         .unwrap()
         .with_arg(fixture.root.path().join("unexpected").to_str().unwrap())
         .unwrap();
-    let command = attachment.command(&remote, Terminal::None);
+    let command = project.command(&remote, Terminal::None);
     let output = Command::new("/bin/sh")
         .arg("-c")
         .arg(command.get_args().last().unwrap())
@@ -484,7 +554,7 @@ fn agent_recipes_run_preinstalled_tools_in_the_workspace_without_installers() {
     let bash_env = fixture.root.path().join("bash-env");
     fs::write(&bash_env, "export PATH=\"$SHROOM_TEST_BIN:$PATH\"\n").unwrap();
     for app in [WebApp::Kimi, WebApp::DeepSeekHarness] {
-        let command = app.launch_command(&fixture.attachment(), app.default_port());
+        let command = app.launch_command(&fixture.project(), app.default_port());
         let output = Command::new("/bin/sh")
             .arg("-c")
             .arg(command.get_args().last().unwrap())
@@ -501,7 +571,7 @@ fn agent_recipes_run_preinstalled_tools_in_the_workspace_without_installers() {
         let lines = stdout.lines().collect::<Vec<_>>();
         assert_eq!(
             fs::canonicalize(lines[0]).unwrap(),
-            fs::canonicalize(&fixture.connection.directory).unwrap()
+            fs::canonicalize(&fixture.directory).unwrap()
         );
         assert_eq!(
             &lines[1..],
@@ -517,7 +587,7 @@ fn agent_recipes_run_preinstalled_tools_in_the_workspace_without_installers() {
     }
     assert!(
         fixture
-            .attachment()
+            .project()
             .kimi_command()
             .get_args()
             .any(|arg| arg == "-tt")

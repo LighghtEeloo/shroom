@@ -8,7 +8,7 @@ use std::{
 };
 
 use shroom_core::{Config, Core, HostPublicKey, SshConnection, WORKSPACE_IMAGE};
-use shroom_integrations::{Attachment, GuestWebUrl, RemoteCommand, Terminal};
+use shroom_integrations::{Attachment, GuestWebUrl, Project, RemoteCommand, Terminal};
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     net::{TcpListener, TcpStream},
@@ -24,6 +24,13 @@ struct Runtime {
 }
 
 impl Runtime {
+    fn project(attachment: &Attachment) -> Project {
+        Project {
+            attachment: attachment.clone(),
+            directory: "/home/developer/workspace".parse().unwrap(),
+        }
+    }
+
     async fn new() -> (Self, Core) {
         let root = tempfile::Builder::new()
             .prefix("sa-")
@@ -90,7 +97,7 @@ impl Runtime {
                 remote.with_arg(*arg)
             })
             .unwrap();
-        Self::output(attachment.command(&remote, Terminal::None)).await
+        Self::output(Self::project(attachment).command(&remote, Terminal::None)).await
     }
 
     async fn get(port: u16) -> Vec<u8> {
@@ -257,7 +264,7 @@ while (my $client = $server->accept()) {
         .unwrap()
         .with_arg(service)
         .unwrap();
-    let mut server = Command::from(attachment.command(&remote, Terminal::None))
+    let mut server = Command::from(Runtime::project(&attachment).command(&remote, Terminal::None))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())

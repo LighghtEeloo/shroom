@@ -224,7 +224,6 @@ impl Access {
             host_key_alias: material.host_key.alias(),
             host_key: material.host_key,
             known_hosts_file: self.directory.join("known_hosts"),
-            directory: user.directory(),
         }
     }
 

@@ -28,18 +28,61 @@ impl SessionInfo {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct WorkspaceView {
+    pub workspace: Workspace,
+    pub directory_editable: bool,
+    pub preference: std::result::Result<WorkingDirectoryPreference, Arc<crate::preferences::Error>>,
+}
+
+impl std::ops::Deref for WorkspaceView {
+    type Target = Workspace;
+    fn deref(&self) -> &Workspace {
+        &self.workspace
+    }
+}
+
+impl WorkspaceView {
+    pub fn directory(&self) -> Result<GuestDirectory> {
+        Ok(self
+            .preference
+            .as_ref()
+            .map_err(Clone::clone)?
+            .resolve(&self.options.user))
+    }
+
+    pub fn project(&self) -> Result<Project> {
+        if self.state != SandboxStatus::Running {
+            return Err(Error::SshUnavailable);
+        }
+        Ok(Project {
+            attachment: Attachment::new(
+                format!("shroom-{}", self.name).parse()?,
+                self.ssh.clone().ok_or(Error::SshUnavailable)?,
+            )?,
+            directory: self.directory()?,
+        })
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum ExportFormat {
     #[default]
     Command,
+    HomeLogin,
     Config,
     ConnectionDetails,
 }
 
 impl ExportFormat {
+    pub fn uses_directory(self) -> bool {
+        matches!(self, Self::Command | Self::ConnectionDetails)
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Self::Command => "Command",
+            Self::HomeLogin => "Home login",
             Self::Config => "SSH config",
             Self::ConnectionDetails => "Connection details",
         }
@@ -47,7 +90,8 @@ impl ExportFormat {
 
     pub fn copy_label(self) -> &'static str {
         match self {
-            Self::Command => "Copy command",
+            Self::Command => "Copy terminal command",
+            Self::HomeLogin => "Copy home login",
             Self::Config => "Copy SSH config",
             Self::ConnectionDetails => "Copy connection details",
         }
@@ -55,7 +99,8 @@ impl ExportFormat {
 
     pub fn copied(self) -> &'static str {
         match self {
-            Self::Command => "SSH command copied",
+            Self::Command => "Terminal command copied",
+            Self::HomeLogin => "Home login command copied",
             Self::Config => "SSH config copied. Place it before matching Host defaults.",
             Self::ConnectionDetails => {
                 "Connection fields copied. Verify the host key in your client before connecting."
@@ -76,52 +121,64 @@ pub struct ConnectionExport {
     pub format: ExportFormat,
     pub text: String,
     pub connection: SshConnection,
+    directory: Option<GuestDirectory>,
 }
 
 impl ConnectionExport {
-    pub fn with_connection(
-        name: &WorkspaceName,
-        connection: SshConnection,
-        format: ExportFormat,
-    ) -> Result<Self> {
-        let attachment = Attachment::new(format!("shroom-{name}").parse()?, connection.clone())?;
+    pub fn with_workspace(workspace: &WorkspaceView, format: ExportFormat) -> Result<Self> {
+        if workspace.state != SandboxStatus::Running {
+            return Err(Error::SshUnavailable);
+        }
+        let connection = workspace.ssh.clone().ok_or(Error::SshUnavailable)?;
+        let attachment = Attachment::new(
+            format!("shroom-{}", workspace.name).parse()?,
+            connection.clone(),
+        )?;
+        let directory = format
+            .uses_directory()
+            .then(|| workspace.directory())
+            .transpose()?;
+        let text = match format {
+            ExportFormat::Command => Project {
+                attachment,
+                directory: directory.clone().expect("project export"),
+            }
+            .terminal_command_line(),
+            ExportFormat::HomeLogin => attachment.ssh_command_line(),
+            ExportFormat::Config => attachment.ssh_config(),
+            ExportFormat::ConnectionDetails => format!(
+                "Host: {}\nPort: {}\nUser: {}\nIdentity file: {}\nProject directory: {}\nPublic host key: {}\nHost key alias: {}",
+                connection.endpoint.ip(),
+                connection.endpoint.port(),
+                connection.user,
+                connection.identity_file.display(),
+                directory.as_ref().expect("project export"),
+                connection.host_key.to_openssh()?,
+                connection.host_key_alias,
+            ),
+        };
         Ok(Self {
-            name: name.clone(),
-            text: match format {
-                ExportFormat::Command => attachment.ssh_command_line(),
-                ExportFormat::Config => attachment.ssh_config(),
-                ExportFormat::ConnectionDetails => format!(
-                    "Host: {}\nPort: {}\nUser: {}\nIdentity file: {}\nProject directory: {}\nPublic host key: {}\nHost key alias: {}",
-                    connection.endpoint.ip(),
-                    connection.endpoint.port(),
-                    connection.user,
-                    connection.identity_file.display(),
-                    connection.directory,
-                    connection.host_key.to_openssh()?,
-                    connection.host_key_alias,
-                ),
-            },
+            name: workspace.name.clone(),
             format,
+            text,
             connection,
+            directory,
         })
     }
 
     pub fn matches(connection: &SshConnection, workspace: &Workspace) -> bool {
-        workspace.state == SandboxStatus::Running
-            && workspace
-                .ssh
-                .as_ref()
-                .is_some_and(|current| Self::same_connection(connection, current))
+        workspace.state == SandboxStatus::Running && workspace.ssh.as_ref() == Some(connection)
     }
 
-    pub fn same_connection(connection: &SshConnection, current: &SshConnection) -> bool {
-        current.endpoint == connection.endpoint
-            && current.user == connection.user
-            && current.identity_file == connection.identity_file
-            && current.known_hosts_file == connection.known_hosts_file
-            && current.host_key == connection.host_key
-            && current.host_key_alias == connection.host_key_alias
-            && current.directory == connection.directory
+    pub fn is_current(&self, workspace: &WorkspaceView) -> bool {
+        self.name == workspace.name
+            && Self::matches(&self.connection, workspace)
+            && self.directory.as_ref().is_none_or(|directory| {
+                workspace
+                    .directory()
+                    .as_ref()
+                    .is_ok_and(|current| current == directory)
+            })
     }
 }
 
@@ -162,7 +219,7 @@ impl Timestamp {
 #[derive(Clone, Default)]
 pub struct Model {
     pub session: Option<SessionInfo>,
-    pub workspaces: Vec<Workspace>,
+    pub workspaces: Vec<WorkspaceView>,
     pub incomplete: Vec<WorkspaceName>,
     pub image: ImageStatus,
     pub catalog_current: bool,
@@ -197,11 +254,13 @@ impl Model {
             self.checks
                 .retain(|check| Some(&check.name) != command.target());
         }
+        if !command.changes_directory_preference() {
+            self.copied = None;
+        }
         self.pending = Some(command.clone());
         self.confirm_remove = None;
         self.errors.clear();
         self.notice = None;
-        self.copied = None;
         true
     }
 
@@ -211,7 +270,12 @@ impl Model {
         let operation_error = reply.outcome.as_ref().err().map(ToString::to_string);
         self.errors.clear();
         self.notice = None;
-        self.copied = None;
+        let preference_edit = pending
+            .as_ref()
+            .is_some_and(Command::changes_directory_preference);
+        if !preference_edit {
+            self.copied = None;
+        }
         let changed_directory = self.session.as_ref().map(|s| &s.state_dir)
             != reply.session.as_ref().map(|s| &s.state_dir);
         if changed_directory {
@@ -294,14 +358,23 @@ impl Model {
                     })
                 });
                 if self.copied.as_ref().is_some_and(|export| {
-                    !self.workspaces.iter().any(|workspace| {
-                        workspace.name == export.name
-                            && ConnectionExport::matches(&export.connection, workspace)
-                    })
+                    !self
+                        .workspaces
+                        .iter()
+                        .any(|workspace| export.is_current(workspace))
                 }) {
+                    let expected = preference_edit
+                        && self.copied.as_ref().is_some_and(|export| {
+                            self.workspaces.iter().any(|workspace| {
+                                export.name == workspace.name
+                                    && ConnectionExport::matches(&export.connection, workspace)
+                            })
+                        });
                     self.copied = None;
-                    self.errors
-                        .push("Connection details changed. Refresh and copy again.".into());
+                    if !expected {
+                        self.errors
+                            .push("Connection details changed. Refresh and copy again.".into());
+                    }
                 }
             }
             Err(error) => {
@@ -364,7 +437,7 @@ impl Model {
         self.notice = None;
     }
 
-    pub fn workspace(&self) -> Option<&Workspace> {
+    pub fn workspace(&self) -> Option<&WorkspaceView> {
         self.workspaces
             .iter()
             .find(|w| Some(&w.name) == self.selected.as_ref())

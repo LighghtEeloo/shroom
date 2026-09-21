@@ -1,11 +1,15 @@
-use std::{env, fs, path::PathBuf};
+use std::{env, fs, path::PathBuf, sync::Arc};
 
+use crate::{
+    preferences::{PreferenceStore, WorkingDirectoryPreference},
+    project::ProjectCheck,
+};
 use microsandbox::{Image, LocalBackend, MicrosandboxError};
 use shroom_core::{
     Config, Core, FolderAccess, HostFolder, HostPort, SandboxStatus, SshConnection,
     WORKSPACE_IMAGE, Workspace, WorkspaceName, WorkspaceOptions,
 };
-use shroom_integrations::{Attachment, GuestPort, GuestWebUrl, WebApp};
+use shroom_integrations::{Attachment, GuestDirectory, GuestPort, GuestWebUrl, Project, WebApp};
 use tokio::sync::Mutex;
 
 use crate::agents::AgentManager;
@@ -35,6 +39,10 @@ pub enum Error {
     WorkspaceExists(WorkspaceName),
     #[error("Web ports must be whole numbers from 1024 to 65535")]
     InvalidWebPort,
+    #[error(transparent)]
+    Preference(#[from] Arc<crate::preferences::Error>),
+    #[error(transparent)]
+    Project(#[from] crate::project::Error),
     #[error(transparent)]
     Agent(#[from] crate::agents::Error),
     #[error(transparent)]
@@ -177,6 +185,8 @@ pub enum Command {
     Remove(WorkspaceName),
     Cleanup(WorkspaceName),
     Export(WorkspaceName, ExportFormat),
+    SetWorkingDirectory(WorkspaceName, GuestDirectory),
+    ResetWorkingDirectory(WorkspaceName),
     AddToCodex(WorkspaceName),
     LaunchWeb(WorkspaceName, WebApp, GuestPort),
     ForwardWeb(WorkspaceName, WebApp, WebForward),
@@ -211,6 +221,13 @@ impl WebForward {
 }
 
 impl Command {
+    pub fn changes_directory_preference(&self) -> bool {
+        matches!(
+            self,
+            Self::SetWorkingDirectory(..) | Self::ResetWorkingDirectory(_)
+        )
+    }
+
     pub fn progress(&self) -> &'static str {
         match self {
             Self::Open { .. } => "Opening workspace directory…",
@@ -224,6 +241,8 @@ impl Command {
             Self::Remove(_) => "Removing workspace…",
             Self::Cleanup(_) => "Removing incomplete setup…",
             Self::Export(..) => "Reading current SSH details…",
+            Self::SetWorkingDirectory(..) => "Saving default working directory…",
+            Self::ResetWorkingDirectory(_) => "Restoring default working directory…",
             Self::AddToCodex(_) => "Preparing Codex in workspace and opening project…",
             Self::LaunchWeb(..) => "Launching web app through SSH…",
             Self::ForwardWeb(..) => "Opening tunnel and checking web app…",
@@ -238,6 +257,8 @@ impl Command {
             | Self::Verify(name)
             | Self::Stop(name)
             | Self::Export(name, _)
+            | Self::SetWorkingDirectory(name, _)
+            | Self::ResetWorkingDirectory(name)
             | Self::AddToCodex(name)
             | Self::LaunchWeb(name, ..)
             | Self::ForwardWeb(name, ..)
@@ -255,6 +276,8 @@ impl Command {
             | Self::Remove(name)
             | Self::Cleanup(name)
             | Self::Export(name, _)
+            | Self::SetWorkingDirectory(name, _)
+            | Self::ResetWorkingDirectory(name)
             | Self::AddToCodex(name)
             | Self::LaunchWeb(name, ..)
             | Self::ForwardWeb(name, ..)
@@ -276,6 +299,10 @@ impl Command {
             Self::Remove(_) => "Workspace deleted",
             Self::Cleanup(_) => "Incomplete setup removed",
             Self::Export(..) => "Current SSH details read",
+            Self::SetWorkingDirectory(..) => {
+                "Default working directory saved; applies to new launches"
+            }
+            Self::ResetWorkingDirectory(_) => "Default working directory restored",
             Self::AddToCodex(_) => {
                 "Codex CLI ready; project sent to Codex. Finish any sign-in or connection setup there."
             }
@@ -340,26 +367,42 @@ impl Command {
                         session.core.remove(&name).await?;
                     }
                     Self::Cleanup(name) => session.cleanup(&name).await?,
+                    Self::SetWorkingDirectory(name, directory) => {
+                        let workspace = session.core.get(&name).await?;
+                        let preference = if directory.as_str()
+                            == workspace.options.user.default_working_directory()
+                        {
+                            WorkingDirectoryPreference::Default
+                        } else {
+                            WorkingDirectoryPreference::Custom(directory)
+                        };
+                        session
+                            .preferences()
+                            .save(&name, &preference)
+                            .map_err(Arc::new)?;
+                    }
+                    Self::ResetWorkingDirectory(name) => {
+                        session.core.get(&name).await?;
+                        session
+                            .preferences()
+                            .save(&name, &WorkingDirectoryPreference::Default)
+                            .map_err(Arc::new)?;
+                    }
                     Self::Export(name, format) => {
-                        // Always fetch again: list snapshots can outlive an endpoint.
-                        let connection = session
-                            .core
-                            .get(&name)
-                            .await?
-                            .ssh
-                            .ok_or(Error::SshUnavailable)?;
+                        let workspace = session.workspace_view(session.core.get(&name).await?);
                         return Ok(Outcome::Exported(Box::new(
-                            ConnectionExport::with_connection(&name, connection, format)?,
+                            ConnectionExport::with_workspace(&workspace, format)?,
                         )));
                     }
                     Self::AddToCodex(name) => {
                         // Resolve current runtime details before touching the user's SSH config.
-                        let attachment = session.attachment(&name).await?;
-                        crate::codex::Codex::add(&name, attachment.connection().clone()).await?;
+                        let project = session.project(&name).await?;
+                        crate::codex::Codex::add(&name, project).await?;
                     }
                     Self::LaunchWeb(name, app, port) => {
-                        let attachment = session.attachment(&name).await?;
-                        agents.launch(name, app, attachment, port).await?;
+                        let project = session.project(&name).await?;
+                        ProjectCheck::check(&project).await?;
+                        agents.launch(name, app, project, port).await?;
                     }
                     Self::ForwardWeb(name, app, forward) => {
                         let attachment = session.attachment(&name).await?;
@@ -384,6 +427,28 @@ struct Session {
 }
 
 impl Session {
+    fn preferences(&self) -> PreferenceStore {
+        PreferenceStore {
+            state_dir: self.state_dir.clone(),
+        }
+    }
+
+    fn workspace_view(&self, workspace: Workspace) -> WorkspaceView {
+        let preference = self.preferences().load(&workspace.name).map_err(Arc::new);
+        WorkspaceView {
+            directory_editable: self
+                .preferences()
+                .workspace_directory(&workspace.name)
+                .is_ok(),
+            workspace,
+            preference,
+        }
+    }
+
+    async fn project(&self, name: &WorkspaceName) -> Result<Project> {
+        self.workspace_view(self.core.get(name).await?).project()
+    }
+
     async fn attachment(&self, name: &WorkspaceName) -> Result<Attachment> {
         let workspace = self.core.get(name).await?;
         if workspace.state != SandboxStatus::Running {
@@ -462,7 +527,13 @@ impl Session {
     }
 
     async fn catalog(&self) -> Result<Catalog> {
-        let workspaces = self.core.list().await?;
+        let workspaces = self
+            .core
+            .list()
+            .await?
+            .into_iter()
+            .map(|workspace| self.workspace_view(workspace))
+            .collect::<Vec<_>>();
         let incomplete = fs::read_dir(self.state_dir.join("access"))?
             .map(|entry| {
                 let entry = entry?;
@@ -499,7 +570,7 @@ pub enum ImageStatus {
 
 #[derive(Default)]
 pub struct Catalog {
-    pub workspaces: Vec<Workspace>,
+    pub workspaces: Vec<WorkspaceView>,
     pub incomplete: Vec<WorkspaceName>,
 }
 
@@ -570,5 +641,7 @@ impl Actions {
     }
 }
 
+#[cfg(test)]
+mod directory_tests;
 #[cfg(test)]
 mod tests;

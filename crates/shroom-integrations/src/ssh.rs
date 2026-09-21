@@ -51,18 +51,13 @@ impl RemoteCommand {
         &self.args
     }
 
-    pub(crate) fn script(&self, directory: &str) -> String {
+    pub(crate) fn script(&self) -> String {
         let command = std::iter::once(&self.program)
             .chain(&self.args)
             .map(|arg| Encoding::shell_word(arg))
             .collect::<Vec<_>>()
             .join(" ");
-        // The prepared guest includes Bash. A login shell sees user-installed agent tools.
-        let script = format!(
-            "cd -- {} && exec {command}",
-            Encoding::shell_word(directory)
-        );
-        format!("exec /bin/bash -lc {}", Encoding::shell_word(&script))
+        format!("exec {command}")
     }
 }
 
@@ -97,28 +92,25 @@ impl Attachment {
         )
     }
 
-    /// Build a command that runs as the workspace user in the hinted directory.
-    /// No host shell is involved. The caller owns spawning, I/O, cancellation, and waiting.
-    pub fn command(&self, remote: &RemoteCommand, terminal: Terminal) -> Command {
+    /// Run account-level setup in the guest login environment without selecting a project.
+    pub fn login_command(&self, remote: &RemoteCommand, terminal: Terminal) -> Command {
+        self.script_command(&remote.script(), terminal)
+    }
+
+    pub(crate) fn script_command(&self, script: &str, terminal: Terminal) -> Command {
         let mut command = self.ssh_command();
         command
             .arg(match terminal {
                 Terminal::Interactive => "-tt",
                 Terminal::None => "-T",
             })
-            .arg("-o")
-            .arg("ClearAllForwardings=yes")
+            .args(["-o", "ClearAllForwardings=yes"])
             .arg(self.alias.as_str())
-            .arg(remote.script(&self.connection.directory));
+            .arg(format!(
+                "exec /bin/bash -lc {}",
+                Encoding::shell_word(script)
+            ));
         command
-    }
-
-    /// Build a command for the installed Kimi terminal interface over interactive SSH.
-    pub fn kimi_command(&self) -> Command {
-        self.command(
-            &RemoteCommand::new("kimi").expect("fixed program"),
-            Terminal::Interactive,
-        )
     }
 
     pub(crate) fn ssh_command(&self) -> Command {
@@ -198,7 +190,7 @@ impl Encoding {
         ))
     }
 
-    fn shell_word(value: &str) -> String {
+    pub(crate) fn shell_word(value: &str) -> String {
         format!("'{}'", value.replace('\'', "'\\''"))
     }
 }

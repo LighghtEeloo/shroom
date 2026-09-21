@@ -8,7 +8,86 @@ use crate::test_support::Fixture as Data;
 
 struct Fixture;
 
+#[test]
+fn stopped_workspace_directory_editor_preserves_invalid_input_and_cancel_discards_it() {
+    let mut runner = Fixture::runner(Fixture::workspaces(SandboxStatus::Stopped), (1320., 1500.));
+    Fixture::click(&mut runner, "Edit working directory");
+    let center = Fixture::paragraph(&runner, "/home/developer/workspace")
+        .unwrap()
+        .layout()
+        .area
+        .center();
+    runner.click_cursor((f64::from(center.x), f64::from(center.y)));
+    for _ in 0..40 {
+        runner.press_key(Key::Named(NamedKey::ArrowRight));
+    }
+    runner.write_text(" ");
+    Fixture::click(&mut runner, "Save working directory");
+    assert!(
+        Fixture::paragraph(
+            &runner,
+            &shroom_integrations::Error::InvalidGuestDirectory.to_string()
+        )
+        .is_some()
+    );
+    assert!(Fixture::label(&runner, "Guest folder").is_some());
+    assert!(Fixture::label(&runner, "Saving default working directory…").is_none());
+    assert!(Fixture::label(&runner, "Starting workspace…").is_none());
+    Fixture::click(&mut runner, "Cancel directory edit");
+    Fixture::click(&mut runner, "Edit working directory");
+    assert!(Fixture::paragraph(&runner, "/home/developer/workspace").is_some());
+}
+
+#[test]
+fn corrupt_preferences_keep_home_login_and_existing_web_actions_available() {
+    let mut initial = Fixture::verified();
+    initial.workspaces[0].preference =
+        Err(Arc::new(crate::preferences::Error::UnsupportedVersion(9)));
+    let app = Shroom {
+        initial,
+        ..Shroom::default()
+    };
+    app.backend.agents.preview(
+        "project",
+        shroom_integrations::WebApp::Kimi,
+        crate::agents::TunnelState::Ready("http://127.0.0.1:5494/".into()),
+    );
+    let mut runner = Fixture::with_app(app, (1320., 1500.));
+    assert!(!Fixture::button_disabled(&runner, "Copy home login"));
+    assert!(Fixture::button_disabled(&runner, "Copy terminal command"));
+    Fixture::click(&mut runner, "Agents");
+    Fixture::click(&mut runner, "Kimi");
+    assert!(Fixture::label(&runner, "Session directory").is_some());
+    assert!(!Fixture::button_disabled(&runner, "Open in browser"));
+}
+
 impl Fixture {
+    fn contains_label(node: &TestingNode, text: &str) -> bool {
+        Label::try_downcast(node.element().as_ref()).is_some_and(|label| label.text == text)
+            || node
+                .children()
+                .iter()
+                .any(|child| Self::contains_label(child, text))
+    }
+
+    fn button_disabled(runner: &TestingRunner, name: &str) -> bool {
+        let node = runner
+            .find(|node, element| {
+                Rect::try_downcast(element)
+                    .filter(|rect| {
+                        rect.accessibility.builder.role() == AccessibilityRole::Button
+                            && Self::contains_label(&node, name)
+                    })
+                    .map(|_| node)
+            })
+            .expect("named button");
+        !Rect::try_downcast(node.element().as_ref())
+            .unwrap()
+            .accessibility
+            .a11y_focusable
+            .is_enabled()
+    }
+
     fn runner(initial: Model, size: (f32, f32)) -> TestingRunner {
         Self::with_app(
             Shroom {
@@ -166,7 +245,7 @@ fn connection_tabs_details_and_compact_navigation_remain_accessible() {
     );
     assert!(Fixture::label(&runner, "SSH verified · 10:00:00 UTC").is_some());
     assert!(
-        Fixture::label(&runner, "Copy command")
+        Fixture::label(&runner, "Copy terminal command")
             .unwrap()
             .is_visible()
     );
@@ -241,7 +320,7 @@ fn agent_picker_exposes_each_native_route_and_both_web_launchers() {
         assert!(Fixture::label(&runner, "Open in browser").is_none());
     }
     Fixture::click(&mut runner, "Command");
-    assert!(Fixture::label(&runner, "Copy command").is_some());
+    assert!(Fixture::label(&runner, "Copy terminal command").is_some());
 }
 
 #[test]
@@ -308,6 +387,7 @@ fn web_browser_actions_require_a_checked_current_connection() {
     }
     let mut initial = Fixture::verified();
     initial.workspaces[0]
+        .workspace
         .ssh
         .as_mut()
         .unwrap()
@@ -682,6 +762,11 @@ fn render_preview() {
     let mut workspaces =
         Fixture::runner(Fixture::workspaces(SandboxStatus::Stopped), (1120., 800.));
     Fixture::screenshot(&mut workspaces, format!("{directory}/workspaces.png"));
+    Fixture::click(&mut workspaces, "Edit working directory");
+    Fixture::screenshot(
+        &mut workspaces,
+        format!("{directory}/working-directory.png"),
+    );
     let mut recovery = Fixture::runner(
         Model {
             session: Data::session(),
@@ -734,8 +819,12 @@ fn render_preview() {
     Fixture::screenshot(&mut agents, format!("{directory}/agents-codex-compact.png"));
     Fixture::click(&mut agents, "DeepSeek Harness");
     Fixture::screenshot(&mut agents, format!("{directory}/agents-compact.png"));
+    let mut initial = Fixture::verified();
+    initial.workspaces[0].preference = Ok(crate::preferences::WorkingDirectoryPreference::Custom(
+        "/mnt/project".parse().unwrap(),
+    ));
     let app = Shroom {
-        initial: Fixture::verified(),
+        initial,
         ..Shroom::default()
     };
     app.backend.agents.preview(
@@ -743,7 +832,7 @@ fn render_preview() {
         shroom_integrations::WebApp::Kimi,
         crate::agents::TunnelState::Ready("http://127.0.0.1:5494/?token=preview".into()),
     );
-    let mut agents = Fixture::with_app(app, (1120., 1000.));
+    let mut agents = Fixture::with_app(app, (1120., 800.));
     Fixture::click(&mut agents, "Agents");
     Fixture::click(&mut agents, "Kimi");
     Fixture::screenshot(&mut agents, format!("{directory}/agents-ready.png"));

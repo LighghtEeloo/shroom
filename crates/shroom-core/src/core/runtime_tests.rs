@@ -694,7 +694,6 @@ async fn custom_account_and_shared_folders_persist_without_modifying_readonly_ho
     assert_eq!(created.options, options);
     let ssh = created.ssh.unwrap();
     assert_eq!(ssh.user, "arctic");
-    assert_eq!(ssh.directory, "/home/arctic/workspace");
     Fixture::assert_sudo(&ssh).await;
     assert_eq!(
         Fixture::ssh(

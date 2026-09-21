@@ -43,7 +43,7 @@ The stanza carries the current endpoint, workspace user, client identity, dedica
 and endpoint-independent `HostKeyAlias` required by the core's trust contract. It requests strict checking,
 public-key authentication, no SSH agent or agent forwarding, and no connection multiplexing. It leaves
 remote commands and application forwarding to the native client. An ordinary native SSH session begins
-in the user's home; select `connection().directory` as the app's remote project directory.
+in the user's home; choose the client's project folder separately from its SSH connection.
 
 `connection()` also exposes the real TCP endpoint and original public host key for clients with their own
 SSH implementation. `NativeApp` supplies setup guidance, a documentation URL, and `HostKeyHandling`.
@@ -62,17 +62,39 @@ support for `HostKeyAlias` or the dedicated known-hosts file. Verify a supported
 client before using it, and refresh cached endpoint fields on reconnect. Grok Bot remains deferred because
 the product investigation has not established a workspace-bound connection path.
 
+## Projects
+
+A `Project` combines an `Attachment` with a `GuestDirectory` selected for a launch. Both fields are public
+validated values, so construct it directly. This snapshot has no persistent identity or catalog. Obtain a
+fresh attachment and resolve the current directory before a new launch; existing processes retain the
+snapshot with which they started. The [desktop app](desktop-app.md#default-working-directory) owns saved defaults.
+
+`GuestDirectory` parses a literal absolute UTF-8 path inside the Linux guest. It requires a leading `/` and
+rejects control characters and whitespace or U+FEFF at either end. Internal spaces, Unicode, quotes, shell
+punctuation, trailing slashes, and parent components retain their literal spelling. No host filesystem lookup,
+trimming, environment expansion, or host symlink canonicalization occurs. `~/project` and `$HOME/project`
+are relative and rejected; `/mnt/$HOME/project` names a literal guest directory. Guest filesystem resolution
+handles symlinks. Selecting a folder does not create directories or change mount permissions.
+
+```rust
+use shroom_integrations::{Attachment, Project};
+
+fn select_project(attachment: Attachment) -> shroom_integrations::Result<Project> {
+    Ok(Project { attachment, directory: "/mnt/project".parse()? })
+}
+```
+
 ### Codex Project Handoff
 
-`Attachment::codex_project_url()` builds a desktop handoff for the attachment's SSH alias and guest directory.
+`Project::codex_project_url()` builds a desktop handoff for its attachment's SSH alias and selected directory.
 The caller installs the complete SSH stanza before opening the returned URL with the operating system:
 
 ```text
 codex://settings/connections/ssh/add?name=<alias>&projectPath=<encoded-absolute-directory>&enabled=true
 ```
 
-Query values are URL-encoded independently. Codex trims the folder parameter, so the builder rejects leading
-or trailing whitespace rather than opening a different directory. The inspected desktop handler registers
+Query values are URL-encoded independently. The validated directory type excludes boundary whitespace that
+Codex would trim. The inspected desktop handler registers
 the alias, creates or reuses its remote project, selects that project, and enables the connection.
 The caller prepares the guest CLI; Codex owns folder consent and authentication. Dispatching a URL does not
 establish that the app accepted it or that the remote session connected.
@@ -87,23 +109,34 @@ and URL dispatch; this library only builds the URL.
 
 ## Guest Commands
 
-`Attachment::command` builds a `std::process::Command` for host OpenSSH. It ignores ambient SSH configuration
-and uses the attachment's trust options. The guest command runs through the prepared image's Bash login shell,
-changes into the workspace directory, and replaces that shell with the requested program. A missing directory
-fails before running the program. Login-shell startup makes user-installed tools available through the guest's
-`PATH`; the caller still owns their installation and authentication.
+`Project::command` builds an unstarted `std::process::Command` for host OpenSSH using the attachment's trust
+options. It loads the prepared guest's Bash login environment, enters the selected directory, checks that it
+is readable and searchable by the guest account, and replaces the shell with the requested program. A failed
+directory guard exits with `Project::DIRECTORY_UNAVAILABLE` (72) before running that program. Read-only folders
+are valid; programs that require writes report their own errors. The check does not use sudo or fall back to home.
+
+`Project::check_directory_command()` builds the same guard without a project program. Callers can execute it
+before external handoffs, but each project command still checks in its own shell to catch a folder removed
+after preflight. `terminal_command()` requests a PTY and starts interactive Bash after the guard;
+`terminal_command_line()` renders exactly the same argv for a POSIX host shell. Normal user shell startup
+behavior remains in effect, including subsequent directory changes made by user scripts.
+
+`Attachment::login_command` runs account-level preparation in the login environment without selecting a
+project. All these builders leave process execution, deadlines, output draining, and cancellation to the caller.
+Login-shell startup exposes user-installed tools through the guest's `PATH`; callers own installation and
+application authentication. Shared SSH stanzas carry no project `RemoteCommand`.
 
 `RemoteCommand` stores an executable and literal arguments. Each is quoted independently for the guest shell;
 the host never evaluates a shell command string. Callers that need a script can explicitly invoke `/bin/sh -c`
 and supply the script as an argument. `Terminal::Interactive` requests a PTY, while `Terminal::None` supports
-captured output and long-running web servers. `Attachment::kimi_command` builds the interactive Kimi CLI command.
+captured output and long-running web servers. `Project::kimi_command` builds the interactive Kimi CLI command.
 
 ```rust,no_run
 use shroom_integrations::{Attachment, RemoteCommand, Terminal};
 
 fn check_codex(attachment: &Attachment) -> Result<(), Box<dyn std::error::Error>> {
     let remote = RemoteCommand::new("codex")?.with_arg("--version")?;
-    let output = attachment.command(&remote, Terminal::None).output()?;
+    let output = attachment.login_command(&remote, Terminal::None).output()?;
     if !output.status.success() {
         return Err("Codex is unavailable in the guest login shell".into());
     }
@@ -114,7 +147,7 @@ fn check_codex(attachment: &Attachment) -> Result<(), Box<dyn std::error::Error>
 ## Web Applications and Forwarding
 
 Kimi and DeepSeek Harness share one launch shape: run an installed guest executable with `web --no-open`,
-bind it to guest loopback, and supply a requested port. `WebApp::launch_command` builds this command;
+bind it to guest loopback, and supply a requested port. `WebApp::launch_command` takes `&Project` and builds this command;
 `default_port()` returns 5494 for Kimi and 3080 for DeepSeek Harness. Install `kimi` or `dsh` into the guest
 login-shell `PATH` beforehand. DeepSeek's documented npm launcher can be used for explicit guest setup,
 but Shroom's launch path calls the installed `dsh` executable and performs no package download.
@@ -127,11 +160,11 @@ Shroom does not parse version-dependent terminal banners or infer readiness from
 
 ```rust,no_run
 use shroom_core::HostPort;
-use shroom_integrations::{Attachment, GuestWebUrl, WebApp, WebTunnel};
+use shroom_integrations::{Attachment, GuestWebUrl, Project, WebApp, WebTunnel};
 use std::process::{Child, Stdio};
 
-fn launch_kimi(attachment: &Attachment) -> std::io::Result<Child> {
-    WebApp::Kimi.launch_command(attachment, WebApp::Kimi.default_port())
+fn launch_kimi(project: &Project) -> std::io::Result<Child> {
+    WebApp::Kimi.launch_command(project, WebApp::Kimi.default_port())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .spawn()

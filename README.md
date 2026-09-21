@@ -21,6 +21,9 @@ Enter the state directory, microsandbox executable, and firmware paths, then cho
 Select a workspace in the sidebar to connect, start, stop, or delete it. The connection panel copies a full
 SSH command or configuration and shows the last authenticated verification separately from runtime state.
 Optional Details shows connection fields and a command for inspecting the same private catalog with `msb`.
+In Details, edit **Default working directory** to choose the folder for new terminals and agent projects,
+including while the workspace is stopped. Existing sessions keep their directory; **Copy home login**
+opens the account home for maintenance.
 The **Agents** tab can add a workspace directly to Codex through SSH. It also provides setup for
 Claude Desktop, Cursor, and ZCode, plus managed SSH launches and browser tunnels for guest installations
 of Kimi and DeepSeek Harness.

@@ -4,8 +4,10 @@ use std::{
     time::Duration,
 };
 
-use shroom_core::{HostPort, SshConnection, Workspace, WorkspaceName};
-use shroom_integrations::{Attachment, GuestPort, GuestWebUrl, WebApp, WebTunnel};
+use shroom_core::{HostPort, SshConnection, WorkspaceName};
+use shroom_integrations::{
+    Attachment, GuestDirectory, GuestPort, GuestWebUrl, Project, WebApp, WebTunnel,
+};
 use tokio::{
     io::AsyncReadExt,
     process::Child,
@@ -14,7 +16,7 @@ use tokio::{
     time,
 };
 
-use crate::model::ConnectionExport;
+use crate::model::{ConnectionExport, WorkspaceView};
 
 const OUTPUT_LIMIT: usize = 32 * 1024;
 
@@ -58,6 +60,7 @@ pub struct WebSession {
     pub name: WorkspaceName,
     pub app: WebApp,
     pub connection: SshConnection,
+    pub directory: GuestDirectory,
     pub launch: LaunchState,
     pub tunnel: TunnelState,
     /// Bounded, memory-only output. It can contain application login URLs.
@@ -103,7 +106,7 @@ impl AgentManager {
         &self,
         name: WorkspaceName,
         app: WebApp,
-        attachment: Attachment,
+        project: Project,
         port: GuestPort,
     ) -> Result<(), Error> {
         if self.updates.borrow().iter().any(|session| {
@@ -123,13 +126,14 @@ impl AgentManager {
                 id,
                 name: name.clone(),
                 app,
-                connection: attachment.connection().clone(),
+                connection: project.attachment.connection().clone(),
+                directory: project.directory.clone(),
                 launch: LaunchState::Running,
                 tunnel: TunnelState::Idle,
                 output: String::new(),
             });
         });
-        match ManagedProcess::spawn(app.launch_command(&attachment, port), context.clone()) {
+        match ManagedProcess::spawn(app.launch_command(&project, port), context.clone()) {
             Ok((launch, _)) => {
                 self.sessions.lock().await.push(ManagedSession {
                     id,
@@ -168,10 +172,12 @@ impl AgentManager {
         if !context.launch_running() {
             return Err(Error::NotRunning);
         }
-        if !self.updates.borrow().iter().any(|view| {
-            view.id == session.id
-                && ConnectionExport::same_connection(&view.connection, attachment.connection())
-        }) {
+        if !self
+            .updates
+            .borrow()
+            .iter()
+            .any(|view| view.id == session.id && &view.connection == attachment.connection())
+        {
             return Err(Error::ConnectionChanged);
         }
         if let Some(tunnel) = session.tunnel.take() {
@@ -237,7 +243,7 @@ impl AgentManager {
     }
 
     /// Drop only sessions whose connection snapshot is no longer current.
-    pub async fn reconcile(&self, workspaces: &[Workspace]) {
+    pub async fn reconcile(&self, workspaces: &[WorkspaceView]) {
         let expired = self
             .updates
             .borrow()

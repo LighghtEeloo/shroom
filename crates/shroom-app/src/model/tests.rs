@@ -4,6 +4,56 @@ use crate::test_support::Fixture as Data;
 struct Fixture;
 
 #[test]
+fn preference_edits_preserve_ssh_proof_and_transport_exports_but_expire_project_exports() {
+    for format in [
+        ExportFormat::Command,
+        ExportFormat::ConnectionDetails,
+        ExportFormat::Config,
+        ExportFormat::HomeLogin,
+    ] {
+        let mut model = Fixture::model();
+        let mut workspace = Data::workspace("alpha", SandboxStatus::Running);
+        let connection = workspace.ssh.clone().unwrap();
+        let name = workspace.name.clone();
+        model.begin(&Command::Verify(name.clone()));
+        model.apply(Fixture::reply(
+            Ok(Outcome::Verified(Box::new(connection))),
+            vec![workspace.clone()],
+        ));
+        model.copied = Some(ConnectionExport::with_workspace(&workspace, format).unwrap());
+        model.begin(&Command::SetWorkingDirectory(
+            name.clone(),
+            "/mnt/b".parse().unwrap(),
+        ));
+        workspace.preference = Ok(WorkingDirectoryPreference::Custom(
+            "/mnt/b".parse().unwrap(),
+        ));
+        model.apply(Fixture::reply(
+            Ok(Outcome::Complete),
+            vec![workspace.clone()],
+        ));
+        assert!(model.check(&name).is_some());
+        assert_eq!(model.copied.is_some(), !format.uses_directory());
+        assert!(model.errors.is_empty());
+        assert!(model.activity[0].error.is_none());
+        let fresh = ConnectionExport::with_workspace(&workspace, format).unwrap();
+        assert!(fresh.is_current(&workspace));
+        workspace.preference = Err(Arc::new(crate::preferences::Error::UnsupportedVersion(9)));
+        assert_eq!(
+            ConnectionExport::with_workspace(&workspace, format).is_ok(),
+            !format.uses_directory()
+        );
+        assert_eq!(fresh.is_current(&workspace), !format.uses_directory());
+    }
+    let mut workspace = Data::workspace("alpha", SandboxStatus::Running);
+    let export = ConnectionExport::with_workspace(&workspace, ExportFormat::Command).unwrap();
+    workspace.preference = Ok(WorkingDirectoryPreference::Custom(
+        workspace.directory().unwrap(),
+    ));
+    assert!(export.is_current(&workspace));
+}
+
+#[test]
 fn web_forms_reject_external_urls_and_invalid_ports_without_exposing_tokens() {
     for url in [
         "http://127.0.0.1:5495/path?token=secret#login",
@@ -31,7 +81,7 @@ fn web_forms_reject_external_urls_and_invalid_ports_without_exposing_tokens() {
     for port in ["abc", "-1", "1023", "65536"] {
         assert!(WebForward::parse("http://127.0.0.1:5494/", port).is_err());
     }
-    let export = ConnectionExport::with_connection(
+    let export = Fixture::export(
         &"project".parse().unwrap(),
         Data::connection("project"),
         ExportFormat::ConnectionDetails,
@@ -39,11 +89,25 @@ fn web_forms_reject_external_urls_and_invalid_ports_without_exposing_tokens() {
     .unwrap();
     assert!(export.text.contains("Port: 2222"));
     assert!(export.text.contains("Public host key: ssh-ed25519 "));
-    assert!(export.text.contains("Project directory: /workspace"));
+    assert!(
+        export
+            .text
+            .contains("Project directory: /home/developer/workspace")
+    );
 }
 
 impl Fixture {
-    fn workspace(name: &str, state: SandboxStatus) -> Workspace {
+    fn export(
+        name: &WorkspaceName,
+        connection: SshConnection,
+        format: ExportFormat,
+    ) -> Result<ConnectionExport> {
+        let mut workspace = Data::workspace(name.as_str(), SandboxStatus::Running);
+        workspace.workspace.ssh = Some(connection);
+        ConnectionExport::with_workspace(&workspace, format)
+    }
+
+    fn workspace(name: &str, state: SandboxStatus) -> WorkspaceView {
         Data::workspace(name, state)
     }
 
@@ -58,14 +122,14 @@ impl Fixture {
         }
     }
 
-    fn catalog(workspaces: Vec<Workspace>) -> Catalog {
+    fn catalog(workspaces: Vec<WorkspaceView>) -> Catalog {
         Catalog {
             workspaces,
             incomplete: Vec::new(),
         }
     }
 
-    fn reply(outcome: Result<Outcome>, workspaces: Vec<Workspace>) -> Reply {
+    fn reply(outcome: Result<Outcome>, workspaces: Vec<WorkspaceView>) -> Reply {
         Reply {
             session: Data::session(),
             selection: None,
@@ -88,12 +152,7 @@ fn ssh_verification_records_proof_while_discovery_and_copying_do_not() {
     model.begin(&Command::Export(name.clone(), ExportFormat::Command));
     model.apply(Fixture::reply(
         Ok(Outcome::Exported(Box::new(
-            ConnectionExport::with_connection(
-                &name,
-                Data::connection("alpha"),
-                ExportFormat::Command,
-            )
-            .unwrap(),
+            Fixture::export(&name, Data::connection("alpha"), ExportFormat::Command).unwrap(),
         ))),
         vec![running.clone()],
     ));
@@ -150,16 +209,22 @@ fn verification_and_exports_cannot_outlive_the_connection_or_directory() {
         model.begin(&Command::Export(name.clone(), ExportFormat::Config));
         let mut workspace = Data::workspace("alpha", SandboxStatus::Running);
         match change {
-            "endpoint" => workspace.ssh.as_mut().unwrap().endpoint.set_port(2223),
+            "endpoint" => workspace
+                .workspace
+                .ssh
+                .as_mut()
+                .unwrap()
+                .endpoint
+                .set_port(2223),
             "stopped" => {
-                workspace.state = SandboxStatus::Stopped;
-                workspace.ssh = None;
+                workspace.workspace.state = SandboxStatus::Stopped;
+                workspace.workspace.ssh = None;
             }
             _ => (),
         }
         let mut reply = Fixture::reply(
             Ok(Outcome::Exported(Box::new(
-                ConnectionExport::with_connection(&name, connection, ExportFormat::Config).unwrap(),
+                Fixture::export(&name, connection, ExportFormat::Config).unwrap(),
             ))),
             vec![workspace],
         );
@@ -296,7 +361,7 @@ fn setup_preserves_literal_paths_and_rejects_ambiguous_paths() {
 fn busy_model_rejects_duplicate_operations_and_invalidates_old_exports() {
     let mut model = Fixture::model();
     model.copied = Some(
-        ConnectionExport::with_connection(
+        Fixture::export(
             &"alpha".parse().unwrap(),
             Data::connection("alpha"),
             ExportFormat::Command,
@@ -343,7 +408,7 @@ fn catalog_failure_disables_stale_actions_until_refresh_succeeds() {
         session: Data::session(),
         selection: None,
         outcome: Ok(Outcome::Exported(Box::new(
-            ConnectionExport::with_connection(
+            Fixture::export(
                 &"alpha".parse().unwrap(),
                 Data::connection("alpha"),
                 ExportFormat::Command,
@@ -375,7 +440,7 @@ fn selection_and_removal_cannot_reuse_another_workspaces_confirmation() {
     let mut model = Fixture::model();
     model.confirm_remove = model.selected.clone();
     model.copied = Some(
-        ConnectionExport::with_connection(
+        Fixture::export(
             &"alpha".parse().unwrap(),
             Data::connection("alpha"),
             ExportFormat::Config,
@@ -576,7 +641,7 @@ async fn missing_image_recovery_and_workspace_lifecycle() {
     let reply = backend.execute(Command::Verify(name.clone())).await;
     assert!(matches!(reply.outcome, Ok(Outcome::Verified(_))));
     let reply = backend
-        .execute(Command::Export(name.clone(), ExportFormat::Command))
+        .execute(Command::Export(name.clone(), ExportFormat::HomeLogin))
         .await;
     let Outcome::Exported(export) = reply.outcome.unwrap() else {
         panic!("expected command export");

@@ -19,7 +19,7 @@ external editor or terminal sessions and has no conversation composer.
 | Sidebar footer | Current directory; **Local workspaces** opens its environment settings |
 | Context toolbar | Current selection, refresh, available lifecycle actions, and a Details toggle |
 | Central view | Native runtime state, SSH readiness, one emphasized next action, and recent session activity |
-| Details | Directory and private runtime storage, scoped `msb` inspection command, and available SSH connection fields |
+| Details | State directory and private runtime storage, scoped `msb` inspection command, editable default working directory, and available SSH connection fields |
 
 One directory is open at a time. Selection survives state changes and failed cleanup when the target still
 exists. **New workspace** opens a form for the name, host port, guest username, and optional shared folders;
@@ -58,7 +58,8 @@ The state directory defaults to `$HOME/.shroom`. On macOS, the app suggests the 
 | `SHROOM_FIRMWARE` | Firmware library |
 | `SHROOM_IMAGE_ARCHIVE` | Suggested archive path in the image import form |
 
-Fields remain editable before opening and are retained for the app session; the app writes no settings file.
+Setup fields remain editable before opening and are retained for the app session. Workspace launch preferences
+are persisted separately under [Default Working Directory](#default-working-directory).
 The displayed directory is canonicalized after opening. The directory session is independent of the workspace
 lifecycle:
 
@@ -150,6 +151,61 @@ that its files will be lost.
 Changing selection or starting another operation clears that confirmation. The core checks actual runtime
 quiescence at deletion time.
 
+## Default Working Directory
+
+A workspace can contain several repositories or expose a project through a host-folder mount. Its default
+working directory selects the folder for new terminals and agent projects. The
+[guest profile](shroom-core.md#guest-profile) supplies the initial value; a saved override applies to subsequent
+launches without restarting the guest. The [integration contract](agent-integrations.md#projects) owns guest-path
+syntax and the execution guard. The account home and existing sessions retain their ordinary behavior.
+
+Details displays the effective **Default working directory** even while stopped. **Edit working directory**
+opens a guest-path field, suggestions from the workspace's shared-folder destinations, **Save working directory**,
+**Cancel directory edit**, and **Use default**. A suggestion fills the field; Save commits it. Reset removes the
+override, and saving the profile default has the same effect. The creation form continues to use the default.
+Saving and resetting are local operations: they never start a VM or contact SSH. Guest availability is checked
+at launch time, so a saved path is not a readiness claim.
+
+The editor requires a current workspace and its real access directory. It follows the existing operation
+serialization. Invalid input or a failed save retains the draft; cancel, workspace selection, and opening
+another state root discard it. An active web session displays its own captured directory alongside the default
+for the next launch. Changing the preference preserves that session's output, reported URL, tunnel, and browser
+controls, including a URL awaiting its first forward.
+
+The app stores only a custom override in `<state_dir>/access/<workspace-name>/app/launch.json`:
+
+```json
+{
+  "version": 1,
+  "working_directory": "/mnt/project"
+}
+```
+
+Absence means the profile default. Resetting an absent override succeeds without creating directories.
+The app owns the schema; core access cleanup owns the enclosing lifetime, so removal also removes the preference
+and name reuse starts with the profile default. Store no endpoint, runtime state, account, or duplicate identity.
+`PreferenceStore` operates while `Session` holds the core's state-root lock. Set and reset recheck the catalog
+entry and require its existing access directory; they never create a replacement workspace directory.
+
+Preference directories use mode `0700` and new files use `0600`. Require real directories and a regular file,
+reject symlink substitutions, and bound records to 16 KiB. Parse stored path text through `GuestDirectory`.
+A save stages and syncs the complete record, atomically replaces it, and syncs the parent; reset unlinks and
+syncs. Creating the app subdirectory also syncs its enclosing directory. Failures before replacement preserve
+the previous record. A final sync failure reports uncertain durability and refreshes the on-disk value
+rather than claiming the old value survived.
+
+An invalid, unreadable, oversized, or unsupported record produces an error on that workspace's preference.
+It does not select a fallback or fail the SDK catalog. New project actions require a readable preference;
+SSH verification, transport exports, lifecycle operations, and existing sessions remain available. Explicit
+Save or Use default can replace or remove an ordinary damaged record; unsafe filesystem entries require repair.
+
+The app joins each core `Workspace` with its preference in `WorkspaceView`. `Session::project` resolves a new
+integration `Project` from current runtime details and the saved choice; transport-only actions use
+`Session::attachment`. Core `SshConnection` equality describes transport freshness independently of directory
+selection. Project exports also compare the effective directory, while existing sessions continue comparing
+only their transport. A preference edit clears stale project exports and preserves SSH proof and transport
+exports. Resetting an equivalent choice does not invalidate its export. Previously copied text remains a snapshot.
+
 ## Connection Readiness and Export
 
 Native runtime state, authenticated SSH readiness, and an external client's connection are separate facts.
@@ -166,7 +222,7 @@ Verification on a workspace already observed stopped is rejected; start remains 
 | External client | Outside Shroom's observation |
 
 A verification result describes its recorded time, displayed in UTC. It is invalidated by a new lifecycle
-operation for that workspace, a changed connection, a nonrunning state, a directory change, or a failed catalog
+operation for that workspace, a changed connection, a nonrunning state, a state-root change, or a failed catalog
 read. Reopening a directory begins with unchecked access. A running label alone never establishes readiness.
 
 The connection panel switches between **Command**, **SSH config**, and **Agents**. Command and configuration
@@ -176,12 +232,15 @@ A changed endpoint or failed catalog read discards the export. Connection text a
 while a request is pending or the catalog is stale.
 Clipboard failures leave selectable connection text and an error.
 
-The POSIX-shell command works without editing SSH configuration. The config stanza belongs before matching
+The primary **Copy terminal command** action opens the selected directory with an execution-time guard.
+**Copy home login** supplies the ordinary account login for maintenance, even if the project preference is invalid.
+Both POSIX-shell commands work without editing SSH configuration. The config stanza belongs before matching
 client defaults. The suggested alias is `shroom-<workspace-name>`; choose distinct aliases across directories.
 The [integration reference](agent-integrations.md#attachments-and-native-applications) owns trust settings,
 quoting, native client setup, and guest working-directory behavior.
 
-Details shows the current endpoint, user, identity path, guest directory, and host identity when available.
+Details shows the current endpoint, user, identity path, and host identity when available. The project directory
+is displayed separately from SSH access.
 Its **Inspect with msb** entry expands a selectable command with `MSB_HOME` and `MSB_CONFIG_PATH` pointing at
 this directory's private runtime storage. The default CLI catalog can therefore differ from Shroom's catalog.
 
@@ -196,13 +255,20 @@ Copying these fields follows the same freshness checks as other connection expor
 on request. Codex's existing primary action is **Add to Codex**, replacing its copy action; manual copying
 remains available in the **SSH config** tab.
 
-**Add to Codex** obtains current connection details for the running workspace, prepares its guest CLI,
-registers an SSH entry, and dispatches the [Codex project handoff](agent-integrations.md#codex-project-handoff).
+**Add to Codex** obtains the current project, checks its directory, prepares the guest CLI through the account
+login environment, and rechecks the directory before registering an SSH entry and dispatching the
+[Codex project handoff](agent-integrations.md#codex-project-handoff).
 Its alias combines the workspace name and full host-key alias,
 distinguishing equal names across state directories and recreated workspaces.
 Repeating the action refreshes that entry with the current endpoint while retaining its trust pin.
 Codex controls the remote project, connection, and sign-in; Shroom copies no credentials.
 The completion notice reports URL dispatch, not successful registration or an authenticated Codex session.
+
+Directory preflights run as the workspace user with a ten-second deadline and bounded diagnostics. A directory
+failure leaves SSH verification intact and offers editing or home login for recovery. Initial folder rejection
+prevents CLI preparation, SSH registration, and URL dispatch; rejection after preparation can leave the CLI
+installed but still prevents the handoff. External clients can encounter later filesystem changes or reject a
+handoff themselves. Saving a preference does not edit their existing projects.
 
 Guest preparation runs as the workspace user over the attachment's pinned SSH connection. It reuses an
 existing `codex` executable, or downloads the [official standalone installer](https://learn.chatgpt.com/docs/codex/cli)
@@ -232,7 +298,8 @@ a workspace restart.
 For Kimi and DeepSeek Harness, the app owns the local SSH launch and tunnel processes. Install the agent in
 the guest; authentication uses the agent's normal flow. The UI presents this sequence:
 
-1. **Launch** starts the installed guest executable with a requested guest port and shows its output.
+1. **Launch** resolves the current project and checks its directory, then starts the installed guest executable
+   with a requested guest port and the integration guard. The app shows its output.
 2. Paste the actual reported HTTP URL, including its login token when present, and choose a local browser port.
 3. **Connect web app** creates the loopback tunnel and checks HTTP reachability. Invalid URLs or ports leave
    the launch and form available for correction; a failed connection closes its tunnel and allows retry.
@@ -248,7 +315,7 @@ Forward setup has a 15-second deadline and HTTP probing an eight-second deadline
 Launch and tunnel processes remain owned by the app while navigating between workspaces or agents.
 **Close web connection** terminates and reaps those local processes without stopping the VM. A guest app may
 survive its launch SSH connection; closing is not a claim that the remote app was stopped. Workspace stop,
-deletion, directory changes, and app exit close the affected connections. Refresh also closes sessions whose
+deletion, state-root changes, and app exit close the affected connections. Refresh also closes sessions whose
 workspace connection changed or disappeared; a failed catalog read closes all managed web connections.
 A launch process exit closes its tunnel and withdraws browser actions. Reconnection is explicit.
 
@@ -283,11 +350,15 @@ appearance changes, and preservation of form input.
 Agent tests cover all six choices, live process updates, port and URL rejection, token-safe diagnostics,
 output bounds, process cleanup, and withholding browser actions for pending, failed, or stale connections.
 Readiness tests distinguish discovery and export from authenticated verification and invalidate old proof
-when the endpoint, runtime state, directory, or catalog availability changes.
+when the endpoint, runtime state, state root, or catalog availability changes. Directory-preference tests
+cover offline editing, persistence, recovery, literal path handling, and preservation of existing web sessions.
 These tests do not boot VMs.
 The [core evaluation](../evaluations/2026-09-20-minimal-core/README.md) records runtime validation separately.
 The [app evaluation](../evaluations/2026-09-20-desktop-app/README.md) records the GUI checks and the passing
 macOS ARM64 image-recovery and lifecycle test.
+The [working directory evaluation](../evaluations/2026-09-21-working-directory/README.md) records preference
+persistence, guarded terminal launches, Codex preparation ordering, and a live web-session directory change,
+with commands to reproduce the additional acceptance test.
 
 An opt-in app acceptance test reproduces the missing-image failure in a temporary root, checks that the
 preflight creates no access artifacts, removes an orphaned setup, rejects a bad archive, imports a valid
@@ -307,7 +378,8 @@ and temporary root on success, and preserves the printed state root for diagnosi
 
 Managed web integration has a separate opt-in test. It installs small fixture executables into a disposable
 guest, exercises both launch recipes and real HTTP forwarding, rejects an occupied port and stopped workspace,
-and checks cleanup on close, stop/start, and directory disconnect. It makes no agent-provider requests:
+and checks cleanup on close, stop/start, and state-root disconnect. It also launches in A, saves B, refreshes,
+forwards the preserved session in A, and checks a later launch in B. It makes no agent-provider requests:
 
 ```sh
 SHROOM_TEST_RUNTIME=/path/to/msb \
@@ -331,7 +403,7 @@ SHROOM_TEST_FIRMWARE=/path/to/libkrunfw \
 ```
 
 An optional headless render supports visual inspection of setup, creation, environment, recovery,
-compact navigation, and running workspaces in both appearances:
+working-directory editing, compact navigation, and running workspaces in both appearances:
 
 ```sh
 mkdir -p /tmp/shroom-preview

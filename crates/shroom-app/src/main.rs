@@ -1,6 +1,8 @@
 mod agents;
 mod codex;
 mod model;
+mod preferences;
+mod project;
 mod ui;
 
 #[cfg(test)]

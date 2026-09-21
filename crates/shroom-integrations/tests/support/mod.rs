@@ -1,11 +1,12 @@
 use std::{fs, path::PathBuf, process::Command};
 
 use shroom_core::{HostPublicKey, SshConnection};
-use shroom_integrations::Attachment;
+use shroom_integrations::{Attachment, Project};
 
 pub struct Fixture {
     pub root: tempfile::TempDir,
     pub connection: SshConnection,
+    pub directory: String,
 }
 
 impl Fixture {
@@ -43,13 +44,23 @@ impl Fixture {
             host_key_alias: host.alias(),
             host_key: host,
             known_hosts_file,
-            directory: directory.to_str().unwrap().into(),
         };
-        Self { root, connection }
+        Self {
+            root,
+            connection,
+            directory: directory.to_str().unwrap().into(),
+        }
     }
 
     pub fn attachment(&self) -> Attachment {
         Attachment::new("shroom-test".parse().unwrap(), self.connection.clone()).unwrap()
+    }
+
+    pub fn project(&self) -> Project {
+        Project {
+            attachment: self.attachment(),
+            directory: self.directory.parse().unwrap(),
+        }
     }
 
     pub fn config(&self) -> PathBuf {

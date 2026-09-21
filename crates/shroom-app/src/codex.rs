@@ -7,8 +7,9 @@ use std::{
     time::Duration,
 };
 
+use crate::project::ProjectCheck;
 use shroom_core::{SshConnection, WorkspaceName};
-use shroom_integrations::Attachment;
+use shroom_integrations::{Attachment, Project};
 use tempfile::NamedTempFile;
 
 mod guest;
@@ -50,6 +51,8 @@ pub enum Error {
     #[error("Codex registration worker failed: {0}")]
     Worker(#[from] tokio::task::JoinError),
     #[error(transparent)]
+    Project(#[from] crate::project::Error),
+    #[error(transparent)]
     Guest(#[from] guest::Error),
 }
 
@@ -62,18 +65,25 @@ impl Codex {
         Ok(Attachment::new(alias, connection)?)
     }
 
-    pub async fn add(name: &WorkspaceName, connection: SshConnection) -> Result<()> {
-        let attachment = Self::attachment(name, connection)?;
-        let url = attachment.codex_project_url()?;
+    pub async fn add(name: &WorkspaceName, mut project: Project) -> Result<()> {
+        project.attachment = Self::attachment(name, project.attachment.connection().clone())?;
+        let url = project.codex_project_url();
         let home = env::var_os("HOME")
             .map(PathBuf::from)
             .filter(|path| path.is_absolute())
             .ok_or(Error::HomeUnavailable)?;
-        guest::Guest::prepare(&attachment).await?;
-        Self::register(home.join(".ssh"), attachment).await?;
+        Self::prepare_project(&project).await?;
+        Self::register(home.join(".ssh"), project.attachment).await?;
         tokio::task::spawn_blocking(move || open::that(url.as_str()))
             .await?
             .map_err(Error::Launch)
+    }
+
+    pub(crate) async fn prepare_project(project: &Project) -> Result<()> {
+        ProjectCheck::check(project).await?;
+        guest::Guest::prepare(&project.attachment).await?;
+        ProjectCheck::check(project).await?;
+        Ok(())
     }
 
     async fn register(directory: PathBuf, attachment: Attachment) -> Result<()> {

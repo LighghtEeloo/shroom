@@ -1,6 +1,6 @@
 use shroom_core::{Config, HostPublicKey, SandboxStatus, SshConnection, Workspace};
 
-use crate::model::SessionInfo;
+use crate::model::{SessionInfo, WorkspaceView};
 
 pub struct Fixture;
 
@@ -29,16 +29,19 @@ impl Fixture {
             known_hosts_file: access.join("known_hosts"),
             host_key_alias: host.alias(),
             host_key: host,
-            directory: "/workspace".into(),
         }
     }
 
-    pub fn workspace(name: &str, state: SandboxStatus) -> Workspace {
-        Workspace {
-            name: name.parse().unwrap(),
-            state,
-            options: Default::default(),
-            ssh: (state == SandboxStatus::Running).then(|| Self::connection(name)),
+    pub fn workspace(name: &str, state: SandboxStatus) -> WorkspaceView {
+        WorkspaceView {
+            directory_editable: true,
+            preference: Ok(Default::default()),
+            workspace: Workspace {
+                name: name.parse().unwrap(),
+                state,
+                options: Default::default(),
+                ssh: (state == SandboxStatus::Running).then(|| Self::connection(name)),
+            },
         }
     }
 }

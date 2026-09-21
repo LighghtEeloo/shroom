@@ -105,7 +105,7 @@ pub struct Workspace {
     pub ssh: Option<SshConnection>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SshConnection {
     pub endpoint: SocketAddr,
     pub user: String,
@@ -113,8 +113,6 @@ pub struct SshConnection {
     pub host_key: HostPublicKey,
     pub host_key_alias: HostKeyAlias,
     pub known_hosts_file: PathBuf,
-    /// Client hint; an ordinary SSH session starts in the account's home.
-    pub directory: String,
 }
 
 /// The failed boundary of an operation; partial artifacts are left for explicit removal.

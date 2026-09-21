@@ -1,24 +1,19 @@
 use std::process::Command;
 
-use crate::{Attachment, Error, GuestPort, RemoteCommand, Result, Terminal};
+use crate::{GuestPort, Project, RemoteCommand, Terminal};
 
-impl Attachment {
+impl Project {
     /// Register this concrete SSH alias and select its remote folder in the Codex desktop app.
     /// Install the SSH stanza first. This route was inspected in desktop version 26.915.31945;
     /// it is not a documented public API, and opening it does not prove connection success.
-    pub fn codex_project_url(&self) -> Result<url::Url> {
-        let directory = &self.connection().directory;
-        // Codex trims this query parameter; never silently select a different directory.
-        if directory.trim_matches(|c: char| c.is_whitespace() || c == '\u{feff}') != directory {
-            return Err(Error::InvalidCodexDirectory);
-        }
+    pub fn codex_project_url(&self) -> url::Url {
         let mut url = url::Url::parse("codex://settings/connections/ssh/add")
             .expect("fixed Codex connection route");
         url.query_pairs_mut()
-            .append_pair("name", self.alias().as_str())
-            .append_pair("projectPath", directory)
+            .append_pair("name", self.attachment.alias().as_str())
+            .append_pair("projectPath", self.directory.as_str())
             .append_pair("enabled", "true");
-        Ok(url)
+        url
     }
 }
 
@@ -125,7 +120,7 @@ impl WebApp {
 
     /// Build a command for a preinstalled executable, without an installer or credential copying.
     /// Read the actual URL from its output before building a tunnel; Kimi may change ports.
-    pub fn launch_command(self, attachment: &Attachment, requested_port: GuestPort) -> Command {
+    pub fn launch_command(self, project: &Project, requested_port: GuestPort) -> Command {
         let command = match self {
             // The caller needs the reported port while the Python web server is still running.
             Self::Kimi => RemoteCommand::new("/usr/bin/env")
@@ -146,6 +141,6 @@ impl WebApp {
             command.with_arg(arg)
         })
         .expect("fixed arguments");
-        attachment.command(&remote, Terminal::None)
+        project.command(&remote, Terminal::None)
     }
 }

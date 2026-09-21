@@ -6852,6 +6852,8 @@ dependencies = [
  "microsandbox",
  "open",
  "reqwest",
+ "serde",
+ "serde_json",
  "shroom-core",
  "shroom-integrations",
  "tempfile",

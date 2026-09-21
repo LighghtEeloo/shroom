@@ -10,6 +10,7 @@ impl AgentManager {
             name: name.parse().unwrap(),
             app,
             connection: Data::connection(name),
+            directory: "/home/developer/workspace".parse().unwrap(),
             launch: LaunchState::Running,
             tunnel,
             output: "Web app listening at http://127.0.0.1:5495/?token=preview\n".into(),
@@ -27,6 +28,7 @@ impl Fixture {
                 name: "project".parse().unwrap(),
                 app: WebApp::Kimi,
                 connection: Data::connection("project"),
+                directory: "/home/developer/workspace".parse().unwrap(),
                 launch: LaunchState::Running,
                 tunnel: TunnelState::Idle,
                 output: String::new(),
@@ -148,7 +150,27 @@ async fn reconciliation_discards_only_changed_or_stopped_workspace_sessions() {
         .await;
     assert_eq!(manager.updates.borrow().len(), 1);
     let mut changed = Data::workspace("project", shroom_core::SandboxStatus::Running);
-    changed.ssh.as_mut().unwrap().endpoint.set_port(3333);
+    changed.preference = Ok(crate::preferences::WorkingDirectoryPreference::Custom(
+        "/mnt/b".parse().unwrap(),
+    ));
+    manager.reconcile(&[changed.clone()]).await;
+    assert_eq!(manager.updates.borrow().len(), 1);
+    assert_eq!(
+        manager.updates.borrow()[0].directory.as_str(),
+        "/home/developer/workspace"
+    );
+    changed.preference = Err(std::sync::Arc::new(
+        crate::preferences::Error::UnsupportedVersion(9),
+    ));
+    manager.reconcile(&[changed.clone()]).await;
+    assert_eq!(manager.updates.borrow().len(), 1);
+    changed
+        .workspace
+        .ssh
+        .as_mut()
+        .unwrap()
+        .endpoint
+        .set_port(3333);
     manager.reconcile(&[changed]).await;
     assert!(manager.updates.borrow().is_empty());
 }
@@ -156,6 +178,13 @@ async fn reconciliation_discards_only_changed_or_stopped_workspace_sessions() {
 struct RuntimeFixture;
 
 impl RuntimeFixture {
+    async fn execute(
+        backend: &crate::model::Backend,
+        command: crate::model::Command,
+    ) -> crate::model::Reply {
+        Box::pin(backend.execute(command)).await
+    }
+
     async fn wait_for_output(manager: &AgentManager, app: WebApp, needle: &str) {
         let mut updates = manager.subscribe();
         time::timeout(Duration::from_secs(10), async {
@@ -184,6 +213,7 @@ impl RuntimeFixture {
 cat > "$HOME/.local/bin/shroom-test-web" <<'PERL'
 #!/usr/bin/perl
 use IO::Socket::INET;
+use Cwd qw(getcwd);
 $| = 1;
 my $kimi = $0 =~ /kimi$/;
 my $port = $kimi ? 15497 : 15498;
@@ -191,6 +221,7 @@ my $requested = $kimi ? 5494 : 3080;
 die "wrong launch arguments" unless join(' ', @ARGV) eq "web --no-open --host 127.0.0.1 --port $requested";
 die "missing unbuffered output" if $kimi && $ENV{PYTHONUNBUFFERED} ne '1';
 my $server = IO::Socket::INET->new(LocalAddr => '127.0.0.1', LocalPort => $port, Listen => 5, ReuseAddr => 1) or die $!;
+print "directory=" . getcwd() . "\n";
 print "http://127.0.0.1:$port/app?token=fixture#login\n";
 while (my $client = $server->accept()) {
     while (my $line = <$client>) { last if $line eq "\r\n"; }
@@ -209,10 +240,11 @@ printf '%s\n' 'export PATH="$HOME/.local/bin:$PATH"' > "$HOME/.bash_profile"
             .unwrap()
             .with_arg(script)
             .unwrap();
-        let output = tokio::process::Command::from(attachment.command(&remote, Terminal::None))
-            .output()
-            .await
-            .unwrap();
+        let output =
+            tokio::process::Command::from(attachment.login_command(&remote, Terminal::None))
+                .output()
+                .await
+                .unwrap();
         assert!(
             output.status.success(),
             "{}",
@@ -233,8 +265,9 @@ async fn managed_web_launch_forward_and_shutdown_with_a_real_guest() {
         .keep();
     eprintln!("web integration acceptance state: {}", directory.display());
     let backend = Backend::default();
-    backend
-        .execute(Action::Open {
+    RuntimeFixture::execute(
+        &backend,
+        Action::Open {
             state_dir: directory.clone(),
             config: Config {
                 runtime_executable: std::env::var_os("SHROOM_TEST_RUNTIME")
@@ -244,35 +277,35 @@ async fn managed_web_launch_forward_and_shutdown_with_a_real_guest() {
                     .expect("set SHROOM_TEST_FIRMWARE")
                     .into(),
             },
-        })
-        .await
-        .outcome
-        .unwrap();
-    backend
-        .execute(Action::ImportImage(
+        },
+    )
+    .await
+    .outcome
+    .unwrap();
+    RuntimeFixture::execute(
+        &backend,
+        Action::ImportImage(
             std::env::var_os("SHROOM_TEST_IMAGE_ARCHIVE")
                 .expect("set SHROOM_TEST_IMAGE_ARCHIVE")
                 .into(),
-        ))
-        .await
-        .outcome
-        .unwrap();
+        ),
+    )
+    .await
+    .outcome
+    .unwrap();
     let port = std::env::var("SHROOM_WEB_TEST_PORT")
         .unwrap_or_else(|_| "34982".into())
         .parse::<u32>()
         .unwrap();
     assert!(port <= 65531);
     let name: WorkspaceName = "agents".parse().unwrap();
-    let Outcome::Verified(connection) = backend
-        .execute(Action::Create(
-            name.clone(),
-            port.try_into().unwrap(),
-            Default::default(),
-        ))
-        .await
-        .outcome
-        .unwrap()
-    else {
+    let Outcome::Verified(connection) = RuntimeFixture::execute(
+        &backend,
+        Action::Create(name.clone(), port.try_into().unwrap(), Default::default()),
+    )
+    .await
+    .outcome
+    .unwrap() else {
         panic!("expected verified connection")
     };
     let attachment = Attachment::new("shroom-agents".parse().unwrap(), *connection).unwrap();
@@ -282,30 +315,61 @@ async fn managed_web_launch_forward_and_shutdown_with_a_real_guest() {
         .into_iter()
         .enumerate()
     {
-        backend
-            .execute(Action::LaunchWeb(name.clone(), app, app.default_port()))
-            .await
-            .outcome
-            .unwrap();
+        RuntimeFixture::execute(
+            &backend,
+            Action::LaunchWeb(name.clone(), app, app.default_port()),
+        )
+        .await
+        .outcome
+        .unwrap();
         RuntimeFixture::wait_for_output(&backend.agents, app, "token=fixture").await;
-        let duplicate = backend
-            .execute(Action::LaunchWeb(name.clone(), app, app.default_port()))
-            .await;
+        let duplicate = RuntimeFixture::execute(
+            &backend,
+            Action::LaunchWeb(name.clone(), app, app.default_port()),
+        )
+        .await;
         assert!(matches!(
             duplicate.outcome,
             Err(crate::model::Error::Agent(Error::AlreadyRunning))
         ));
+        let expected = if index == 0 {
+            "/home/developer/workspace"
+        } else {
+            "/home/developer"
+        };
+        RuntimeFixture::wait_for_output(&backend.agents, app, &format!("directory={expected}\n"))
+            .await;
+        if index == 0 {
+            let before = backend.agents.subscribe().borrow()[0].clone();
+            RuntimeFixture::execute(
+                &backend,
+                Action::SetWorkingDirectory(name.clone(), "/home/developer".parse().unwrap()),
+            )
+            .await
+            .outcome
+            .unwrap();
+            RuntimeFixture::execute(&backend, Action::Refresh)
+                .await
+                .outcome
+                .unwrap();
+            let after = backend.agents.subscribe().borrow()[0].clone();
+            assert_eq!(before.id, after.id);
+            assert_eq!(before.directory, after.directory);
+            assert!(after.output.contains("token=fixture"));
+        }
         let reported = format!("http://127.0.0.1:{}/app?token=fixture#login", 15497 + index);
         let local = (port + 1 + index as u32).try_into().unwrap();
         let forward = WebForward {
             guest: reported.parse().unwrap(),
             local_port: local,
         };
-        backend
-            .execute(Action::ForwardWeb(name.clone(), app, forward.clone()))
-            .await
-            .outcome
-            .unwrap();
+        RuntimeFixture::execute(
+            &backend,
+            Action::ForwardWeb(name.clone(), app, forward.clone()),
+        )
+        .await
+        .outcome
+        .unwrap();
         let url = {
             let updates = backend.agents.subscribe();
             let snapshots = updates.borrow();
@@ -333,9 +397,9 @@ async fn managed_web_launch_forward_and_shutdown_with_a_real_guest() {
                 local_port: (port + 3).try_into().unwrap(),
                 ..forward.clone()
             };
-            let reply = backend
-                .execute(Action::ForwardWeb(name.clone(), app, conflict))
-                .await;
+            let reply =
+                RuntimeFixture::execute(&backend, Action::ForwardWeb(name.clone(), app, conflict))
+                    .await;
             assert!(matches!(
                 reply.outcome,
                 Err(crate::model::Error::Agent(Error::TunnelUnavailable))
@@ -352,13 +416,11 @@ async fn managed_web_launch_forward_and_shutdown_with_a_real_guest() {
                 TunnelState::Failed(_)
             ));
             drop(occupied);
-            backend
-                .execute(Action::ForwardWeb(name.clone(), app, forward))
+            RuntimeFixture::execute(&backend, Action::ForwardWeb(name.clone(), app, forward))
                 .await
                 .outcome
                 .unwrap();
-            backend
-                .execute(Action::CloseWeb(name.clone(), app))
+            RuntimeFixture::execute(&backend, Action::CloseWeb(name.clone(), app))
                 .await
                 .outcome
                 .unwrap();
@@ -369,8 +431,7 @@ async fn managed_web_launch_forward_and_shutdown_with_a_real_guest() {
             );
         }
     }
-    backend
-        .execute(Action::Stop(name.clone()))
+    RuntimeFixture::execute(&backend, Action::Stop(name.clone()))
         .await
         .outcome
         .unwrap();
@@ -380,52 +441,57 @@ async fn managed_web_launch_forward_and_shutdown_with_a_real_guest() {
             .await
             .is_err()
     );
-    let stopped_launch = backend
-        .execute(Action::LaunchWeb(
-            name.clone(),
-            WebApp::Kimi,
-            WebApp::Kimi.default_port(),
-        ))
-        .await;
+    let stopped_launch = RuntimeFixture::execute(
+        &backend,
+        Action::LaunchWeb(name.clone(), WebApp::Kimi, WebApp::Kimi.default_port()),
+    )
+    .await;
     assert!(matches!(
         stopped_launch.outcome,
         Err(crate::model::Error::SshUnavailable)
     ));
-    backend
-        .execute(Action::Start(name.clone()))
+    RuntimeFixture::execute(&backend, Action::Start(name.clone()))
         .await
         .outcome
         .unwrap();
-    backend
-        .execute(Action::LaunchWeb(
-            name.clone(),
-            WebApp::Kimi,
-            WebApp::Kimi.default_port(),
-        ))
-        .await
-        .outcome
-        .unwrap();
+    RuntimeFixture::execute(
+        &backend,
+        Action::LaunchWeb(name.clone(), WebApp::Kimi, WebApp::Kimi.default_port()),
+    )
+    .await
+    .outcome
+    .unwrap();
     RuntimeFixture::wait_for_output(&backend.agents, WebApp::Kimi, "token=fixture").await;
-    backend.execute(Action::Disconnect).await.outcome.unwrap();
+    RuntimeFixture::execute(&backend, Action::Disconnect)
+        .await
+        .outcome
+        .unwrap();
     assert!(backend.agents.subscribe().borrow().is_empty());
     // Reopening discovers the still-running workspace after the app-owned connection is gone.
-    backend
-        .execute(Action::Open {
+    RuntimeFixture::execute(
+        &backend,
+        Action::Open {
             state_dir: directory.clone(),
             config: Config {
                 runtime_executable: std::env::var_os("SHROOM_TEST_RUNTIME").unwrap().into(),
                 firmware: std::env::var_os("SHROOM_TEST_FIRMWARE").unwrap().into(),
             },
-        })
+        },
+    )
+    .await
+    .outcome
+    .unwrap();
+    RuntimeFixture::execute(&backend, Action::Stop(name.clone()))
         .await
         .outcome
         .unwrap();
-    backend
-        .execute(Action::Stop(name.clone()))
+    RuntimeFixture::execute(&backend, Action::Remove(name))
         .await
         .outcome
         .unwrap();
-    backend.execute(Action::Remove(name)).await.outcome.unwrap();
-    backend.execute(Action::Disconnect).await.outcome.unwrap();
+    RuntimeFixture::execute(&backend, Action::Disconnect)
+        .await
+        .outcome
+        .unwrap();
     std::fs::remove_dir_all(directory).unwrap();
 }

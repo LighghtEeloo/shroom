@@ -87,7 +87,6 @@ pub struct SshConnection {
     pub host_key: HostPublicKey,
     pub host_key_alias: HostKeyAlias,
     pub known_hosts_file: PathBuf,
-    pub directory: String,
 }
 
 impl Core {
@@ -141,7 +140,6 @@ They still show other native states and partially created sandboxes.
 An observed `Running` status alone is not an SSH health guarantee.
 Malformed existing access files produce errors; missing or incomplete access material is diagnosed
 by `start` and is never repaired implicitly.
-The directory is a client hint; an ordinary SSH session begins in the account's home.
 
 ### SSH Identity and Connection Refresh
 
@@ -179,7 +177,9 @@ Existing sessions and application tunnels do not survive a VM restart.
 
 Give the SDK a dedicated home and configuration path under `microsandbox/`.
 The SDK sandbox name is the workspace name inside this private catalog; no name or native-ID mapping is needed.
-Shroom stores only its access artifacts and directory lock alongside the runtime's own files.
+The core stores access artifacts and a directory lock alongside the runtime's own files.
+The desktop app owns [launch preferences](desktop-app.md#default-working-directory) inside each workspace's
+access directory so they share its removal lifetime; the core does not read or interpret them.
 
 ```text
 <state_dir>/
@@ -190,6 +190,7 @@ Shroom stores only its access artifacts and directory lock alongside the runtime
       client_ed25519            # private key, host only
       client_ed25519.pub
       known_hosts               # pinned host key under an address-independent alias
+      app/                      # desktop-owned preferences; removed with this access directory
 ```
 
 One exclusive OS file lock prevents two Shroom instances from provisioning or changing access files in the same root.
@@ -214,6 +215,8 @@ The account defaults to `developer`; callers may choose a different login name a
 `GuestUser` accepts 1–32 lowercase ASCII letters, digits, underscores, or hyphens, starting with a letter,
 and rejects `root`. Provisioning rejects names already used by another image account or group.
 The account retains UID/GID 1000 and has a writable home and `/home/<user>/workspace`.
+`GuestUser::default_working_directory()` returns that prepared project directory. Ordinary SSH login begins
+in the account home; project-directory selection belongs to the application and integration layer.
 Grant passwordless sudo for all commands and run-as users so workspace users and agents can install packages
 and configure the guest. The VM is the isolation boundary; guest root-owned files are modifiable through sudo.
 Store an optional username override in the SDK's `shroom.user` label; absence means the default account.

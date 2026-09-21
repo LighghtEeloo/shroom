@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
 use freya::prelude::*;
-use shroom_core::{SandboxStatus, Workspace, WorkspaceName};
+use shroom_core::{SandboxStatus, WorkspaceName};
 
 use crate::model::{
     Actions, Backend, CheckResult, Command, ConnectionExport, CreateForm, ExportFormat,
-    ImageStatus, Model, SetupForm, Timestamp,
+    ImageStatus, Model, SetupForm, Timestamp, WorkspaceView,
 };
 
 mod icons;
@@ -13,6 +13,7 @@ mod style;
 use icons::{Icon, IconButton};
 use style::Palette;
 mod agents;
+mod directory;
 use agents::Agent;
 
 #[derive(Default)]
@@ -40,6 +41,7 @@ struct Navigation {
     show_agents: bool,
     inspect: bool,
     diagnostics: bool,
+    directory_editor: Option<WorkspaceName>,
 }
 
 impl Default for Navigation {
@@ -54,12 +56,23 @@ impl Default for Navigation {
             show_agents: false,
             inspect: false,
             diagnostics: false,
+            directory_editor: None,
         }
     }
 }
 
 impl Navigation {
     fn reconcile(&mut self, command: &Command, view: &Model, succeeded: bool) {
+        if succeeded
+            && (command.changes_directory_preference()
+                || matches!(command, Command::Open { .. } | Command::Disconnect))
+        {
+            self.directory_editor = None;
+        }
+        if succeeded && matches!(command, Command::Export(_, ExportFormat::HomeLogin)) {
+            self.format = ExportFormat::HomeLogin;
+            self.show_agents = false;
+        }
         let show_workspace = match command {
             Command::Open { .. } => succeeded,
             Command::Create(name, ..) => {
@@ -220,7 +233,9 @@ impl Ui {
                         .write()
                         .reconcile(&completed, &self.model.peek(), succeeded);
                     let copied = self.model.peek().copied.clone();
-                    if let Some(export) = copied {
+                    if let Some(export) =
+                        copied.filter(|_| matches!(completed, Command::Export(..)))
+                    {
                         match Clipboard::set(export.text) {
                             Ok(()) => {
                                 self.model.write().notice = Some(export.format.copied().into())
@@ -420,6 +435,7 @@ impl Ui {
                 let name = name.clone();
                 move |_| {
                     model.write().select(name.clone());
+                    navigation.write().directory_editor = None;
                     let mut nav = navigation.write();
                     nav.page = Page::Workspace;
                     nav.sidebar = false;
@@ -867,18 +883,12 @@ impl Ui {
         &self,
         view: &Model,
         nav: &Navigation,
-        workspace: &Workspace,
+        workspace: &WorkspaceView,
         verified: bool,
     ) -> Rect {
         let p = self.colors;
         let mut navigation = self.navigation;
-        let export = workspace
-            .ssh
-            .clone()
-            .ok_or(crate::model::Error::SshUnavailable)
-            .and_then(|connection| {
-                ConnectionExport::with_connection(&workspace.name, connection, nav.format)
-            });
+        let export = ConnectionExport::with_workspace(workspace, nav.format);
         let enabled = view.available() && export.is_ok();
         let copy = self.command_icon(
             nav.format.copy_label(),
@@ -899,7 +909,7 @@ impl Ui {
                         .child(rect().width(Size::flex(1.)).child(Icon::Terminal.beside(label().text("Connect").font_weight(FontWeight::MEDIUM))))
                         .children([ExportFormat::Command, ExportFormat::Config].into_iter().map(|format| {
                             p.button(format.label(), view.pending.is_none()).flat()
-                                .background(if !nav.show_agents && nav.format == format { p.selected } else { p.background })
+                                .background(if !nav.show_agents && (nav.format == format || (format == ExportFormat::Command && nav.format == ExportFormat::HomeLogin)) { p.selected } else { p.background })
                                 .on_press(move |_| {
                                     let mut nav = navigation.write();
                                     nav.format = format;
@@ -923,11 +933,16 @@ impl Ui {
                                 }))),
                     )
                     .child(p.caption(match nav.format {
-                        ExportFormat::Command => "Identity and pinned host verification included.",
+                        ExportFormat::Command => "Opens the selected working directory with pinned host verification.",
+                        ExportFormat::HomeLogin => "Opens the guest account home for maintenance.",
                         ExportFormat::Config => "Place this stanza before matching Host defaults.",
                         ExportFormat::ConnectionDetails => "Verify the host key in the client before connecting.",
                     }))
-                    .child(if verified { p.primary(copy) } else { copy }).into_element()
+                    .child(if verified && enabled { p.primary(copy) } else { copy })
+                    .maybe_child((nav.format == ExportFormat::Command).then(|| self.command_icon(
+                        "Copy home login", Icon::Terminal,
+                        Command::Export(workspace.name.clone(), ExportFormat::HomeLogin), view.available(),
+                    ).flat())).into_element()
                     }),
             )
             .child(if verified { verify.flat() } else { p.primary(verify) })
@@ -1111,6 +1126,7 @@ impl Ui {
                                     .width(Size::fill())
                                     .spacing(10.)
                                     .child(p.divider())
+                                    .child(self.working_directory(view, nav, workspace))
                                     .child(p.value(
                                         "Guest username",
                                         workspace.options.user.to_string(),
@@ -1165,7 +1181,6 @@ impl Ui {
                                         .spacing(16.)
                                         .child(p.value("Address", ssh.endpoint.to_string()))
                                         .child(p.value("User", ssh.user.clone()))
-                                        .child(p.value("Guest directory", ssh.directory.clone()))
                                         .child(
                                             p.value(
                                                 "Host identity",

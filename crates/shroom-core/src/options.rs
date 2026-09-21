@@ -26,7 +26,7 @@ impl GuestUser {
         &self.0
     }
 
-    pub fn directory(&self) -> String {
+    pub fn default_working_directory(&self) -> String {
         format!("/home/{self}/workspace")
     }
 }
@@ -191,7 +191,8 @@ impl WorkspaceOptions {
                 .collect::<Result<_>>()?,
         };
         if !matches!(config.spec.runtime.workdir.as_deref(), Some("/"))
-            && config.spec.runtime.workdir.as_deref() != Some(options.user.directory().as_str())
+            && config.spec.runtime.workdir.as_deref()
+                != Some(options.user.default_working_directory().as_str())
         {
             return Err(Error::InvalidHostFolder(
                 "guest working directory does not match its account",
@@ -251,7 +252,10 @@ mod tests {
         for name in ["developer", "arctic", "user_2", "a-b", &"a".repeat(32)] {
             let user: GuestUser = name.parse().unwrap();
             assert_eq!(user.as_str(), name);
-            assert_eq!(user.directory(), format!("/home/{name}/workspace"));
+            assert_eq!(
+                user.default_working_directory(),
+                format!("/home/{name}/workspace")
+            );
         }
         for name in [
             "",

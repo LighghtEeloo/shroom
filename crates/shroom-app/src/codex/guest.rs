@@ -45,7 +45,7 @@ exec codex --version
             .and_then(|command| command.with_arg("-c"))
             .and_then(|command| command.with_arg(script))
             .expect("fixed guest setup script");
-        attachment.command(&remote, Terminal::None)
+        attachment.login_command(&remote, Terminal::None)
     }
 
     async fn run(command: std::process::Command, timeout: Duration) -> Result<(), Error> {

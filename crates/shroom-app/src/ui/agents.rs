@@ -48,7 +48,7 @@ impl Ui {
         &self,
         view: &Model,
         nav: &Navigation,
-        workspace: &Workspace,
+        workspace: &WorkspaceView,
     ) -> Rect {
         let p = self.colors;
         let mut navigation = self.navigation;
@@ -98,7 +98,7 @@ impl Ui {
             })
     }
 
-    fn native_agent(&self, view: &Model, workspace: &Workspace, app: NativeApp) -> Rect {
+    fn native_agent(&self, view: &Model, workspace: &WorkspaceView, app: NativeApp) -> Rect {
         let p = self.colors;
         let direct = app.host_key_handling() == HostKeyHandling::ClientVerificationRequired;
         let format = if direct {
@@ -107,20 +107,18 @@ impl Ui {
             ExportFormat::Config
         };
         let codex = app == NativeApp::Codex;
-        let export: crate::model::Result<(String, String)> = workspace
-            .ssh
-            .clone()
-            .ok_or(Error::SshUnavailable)
-            .and_then(|connection| {
-                if codex {
-                    let attachment = crate::codex::Codex::attachment(&workspace.name, connection)?;
-                    attachment.codex_project_url()?;
-                    Ok((attachment.alias().to_string(), attachment.ssh_config()))
-                } else {
-                    ConnectionExport::with_connection(&workspace.name, connection, format)
-                        .map(|export| (format!("shroom-{}", workspace.name), export.text))
-                }
-            });
+        let export: crate::model::Result<(String, String)> = if codex {
+            workspace.project().and_then(|project| {
+                let attachment = crate::codex::Codex::attachment(
+                    &workspace.name,
+                    project.attachment.connection().clone(),
+                )?;
+                Ok((attachment.alias().to_string(), attachment.ssh_config()))
+            })
+        } else {
+            ConnectionExport::with_workspace(workspace, format)
+                .map(|export| (format!("shroom-{}", workspace.name), export.text))
+        };
         let enabled = view.available() && export.is_ok();
         let alias = export
             .as_ref()
@@ -160,13 +158,15 @@ impl Ui {
             .maybe_child((!direct && enabled).then(|| {
                 rect().horizontal().width(Size::fill()).content(Content::Flex).spacing(16.)
                     .child(rect().width(Size::flex(1.)).child(p.value("SSH host alias", alias)))
-                    .child(rect().width(Size::flex(1.)).child(p.value("Remote project folder", workspace.ssh.as_ref().expect("available connection").directory.clone())))
+                    .child(rect().width(Size::flex(1.)).child(p.value("Remote project folder", workspace.directory().map(|directory| directory.to_string()).unwrap_or_else(|error| error.to_string()))))
             }))
             .child(ScrollView::new().width(Size::fill()).height(Size::px(if direct { 172. } else { 110. }))
                 .child(rect().width(Size::fill()).padding(10.).background(p.surface)
-                    .child(p.code(if enabled {
-                        export.expect("enabled export").1
-                    } else { "Connection details are unavailable while refreshing or changing this workspace.".into() }))))
+                    .child(p.code(match export {
+                        Ok(export) if view.available() => export.1,
+                        Ok(_) => "Connection details are unavailable while refreshing or changing this workspace.".into(),
+                        Err(error) => error.to_string(),
+                    }))))
             .maybe_child((!codex).then(primary_action))
             .child(self.external_link("Setup documentation", app.documentation().into(), true))
     }
@@ -231,6 +231,11 @@ impl Component for WebAgentPanel {
             workspace
                 .is_some_and(|workspace| ConnectionExport::matches(&session.connection, workspace))
         });
+        let directory = workspace.map(|workspace| workspace.directory());
+        let can_launch = available
+            && directory
+                .as_ref()
+                .is_some_and(|directory| directory.is_ok());
         let running = current.is_some_and(|session| session.launch == LaunchState::Running);
         let ui = self.ui.clone();
         let name = self.name.clone();
@@ -240,10 +245,14 @@ impl Component for WebAgentPanel {
                 .child(rect().width(Size::flex(1.)).child(label().text(format!("{} in your browser", app.name())).font_weight(FontWeight::MEDIUM)))
                 .child(self.ui.external_link("Docs", app.documentation().into(), true)))
             .child(p.caption(format!("Install {} in this workspace first. Authenticate using the app's normal setup.", app.executable())))
+            .maybe_child(directory.as_ref().map(|directory| match directory {
+                Ok(directory) => p.value("Default working directory", directory.to_string()).into_element(),
+                Err(error) => p.caption(error.to_string()).color(p.error).into_element(),
+            }))
             .maybe_child((!running).then(|| {
                 rect().horizontal().width(Size::fill()).content(Content::Flex).cross_align(Alignment::End).spacing(10.)
                     .child(rect().width(Size::flex(1.)).child(p.field("Requested guest port", "5494", requested_port.into(), available)))
-                    .child(p.primary(p.button_icon(format!("Launch {}", app.name()), Icon::Play, available)
+                    .child(p.primary(p.button_icon(format!("Launch {}", app.name()), Icon::Play, can_launch)
                         .on_press(move |_| {
                             let command = requested_port.peek().parse::<u32>().map_err(|_| Error::InvalidWebPort)
                                 .and_then(|port| GuestPort::try_from(port).map_err(Error::from))
@@ -255,6 +264,7 @@ impl Component for WebAgentPanel {
                 let output = session.output.clone();
                 let output_open = show_output().unwrap_or(!matches!(session.tunnel, TunnelState::Ready(_)));
                 rect().width(Size::fill()).spacing(12.)
+                    .child(p.value("Session directory", session.directory.to_string()))
                     .child(Icon::Globe.beside(label().text(session.status()).font_size(13.))
                         .color(if session.launch == LaunchState::Exited || matches!(session.tunnel, TunnelState::Failed(_)) { p.warning } else { p.green }))
                     .child(p.button(if output_open { "Hide launch output" } else { "Show launch output" }, true).flat()

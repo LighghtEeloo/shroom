@@ -1,6 +1,7 @@
 #![doc = include_str!("../../../docs/references/agent-integrations.md")]
 
 mod apps;
+mod project;
 mod ssh;
 mod web;
 
@@ -10,6 +11,7 @@ use derive_more::Display;
 use shroom_core::SshConnection;
 
 pub use apps::{HostKeyHandling, NativeApp, WebApp};
+pub use project::{GuestDirectory, Project};
 pub use ssh::{RemoteCommand, Terminal};
 pub use web::{GuestPort, GuestWebUrl, WebTunnel};
 
@@ -67,13 +69,6 @@ impl Attachment {
         }
         ssh::Encoding::path(&connection.identity_file)?;
         ssh::Encoding::path(&connection.known_hosts_file)?;
-        if !connection.directory.starts_with('/')
-            || connection.directory.chars().any(char::is_control)
-        {
-            return Err(Error::InvalidConnection(
-                "expected an absolute guest directory without control characters",
-            ));
-        }
         Ok(Self { alias, connection })
     }
 
@@ -101,8 +96,10 @@ pub enum Error {
     InvalidProgram,
     #[error("remote command arguments cannot contain NUL")]
     InvalidArgument,
-    #[error("Codex cannot register a remote directory with leading or trailing whitespace")]
-    InvalidCodexDirectory,
+    #[error(
+        "Guest directory must be an absolute path without control characters or surrounding whitespace"
+    )]
+    InvalidGuestDirectory,
     #[error("guest web port {0} must be in 1024–65535")]
     InvalidGuestPort(u32),
     #[error(
